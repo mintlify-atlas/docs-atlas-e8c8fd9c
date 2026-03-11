@@ -1,0 +1,415 @@
+---
+title: 'PDF2HTML Pipeline Lambda'
+description: 'Lambda function for converting PDFs to accessible HTML with Bedrock Data Automation'
+---
+
+# PDF2HTML Pipeline Lambda
+
+The PDF2HTML Pipeline Lambda is a containerized Lambda function that converts PDF documents to accessible HTML format using AWS Bedrock Data Automation. This function provides an alternative remediation path for documents that can be reformatted for web accessibility.
+
+## Function Configuration
+
+<ParamField path="handler" type="string" default="lambda_function.lambda_handler">
+  Entry point for the Lambda function (Python)
+</ParamField>
+
+<ParamField path="runtime" type="string" default="Python 3.12">
+  Lambda runtime environment (containerized)
+</ParamField>
+
+<ParamField path="memory" type="number" default="10240">
+  Memory allocation in MB (10 GB for large PDF processing)
+</ParamField>
+
+<ParamField path="ephemeral_storage" type="number" default="15360">
+  Ephemeral storage in MB (15 GB for temporary files)
+</ParamField>
+
+<ParamField path="timeout" type="number" default="900">
+  Maximum execution time in seconds (15 minutes)
+</ParamField>
+
+## Trigger
+
+The function is triggered by S3 `ObjectCreated` events:
+
+```json S3 Event Trigger
+{
+  "Records": [
+    {
+      "s3": {
+        "bucket": {
+          "name": "pdf2html-bucket-123456789012-us-east-1"
+        },
+        "object": {
+          "key": "uploads/document.pdf"
+        }
+      }
+    }
+  ]
+}
+```
+
+**Filter Rules:**
+- Prefix: `uploads/`
+- Suffix: `.pdf`
+
+## Processing Workflow
+
+<Steps>
+  <Step title="Event Validation">
+    Validates S3 event and extracts bucket/key information. Performs idempotency check to prevent reprocessing.
+    
+    ```python Idempotency Check
+    # Check if output already exists
+    output_check_key = f"output/{filename_base}.zip"
+    try:
+        s3.head_object(Bucket=bucket, Key=output_check_key)
+        return {"status": "skipped", "message": "Output already exists"}
+    except s3.exceptions.ClientError:
+        # File doesn't exist, proceed with processing
+        pass
+    ```
+  </Step>
+
+  <Step title="Filename Sanitization">
+    Sanitizes filenames by replacing spaces and special characters with underscores.
+    
+    ```python Filename Sanitization
+    def sanitize_filename(filename):
+        sanitized = filename.replace(' ', '_')
+        
+        # Replace special characters
+        for char in ['#', '%', '&', '{', '}', '\\', '<', '>', '*', 
+                     '?', '/', '$', '!', "'", '"', ':', '@', '+', 
+                     '`', '|', '=']:
+            sanitized = sanitized.replace(char, '_')
+        
+        # Remove multiple underscores
+        while '__' in sanitized:
+            sanitized = sanitized.replace('__', '_')
+        
+        return sanitized.strip('_')
+    ```
+  </Step>
+
+  <Step title="Download PDF">
+    Downloads PDF from S3 to `/tmp/` directory for processing.
+    
+    ```python Download from S3
+    local_in = f"/tmp/{sanitized_filename}"
+    s3.download_file(bucket, key, local_in)
+    ```
+  </Step>
+
+  <Step title="Bedrock Data Automation Processing">
+    Processes PDF using `content_accessibility_utility_on_aws` library which integrates with Bedrock Data Automation.
+    
+    ```python Process with BDA
+    from content_accessibility_utility_on_aws.api import process_pdf_accessibility
+    
+    temp_output_dir = tempfile.mkdtemp(prefix="accessibility_", dir="/tmp")
+    
+    process_pdf_accessibility(
+        input_file=local_in,
+        output_dir=temp_output_dir,
+        bedrock_data_automation_project_arn=bda_project_arn,
+        cleanup=True
+    )
+    ```
+    
+    This step:
+    - Parses PDF structure with Bedrock Data Automation
+    - Extracts text, images, and layout information
+    - Generates semantic HTML with proper heading hierarchy
+    - Creates alt-text for images using AI models
+    - Produces accessibility remediation report
+  </Step>
+
+  <Step title="Package Results">
+    Creates two ZIP files with processing results:
+    
+    **Complete Package** (`output/{filename}.zip`):
+    - All intermediate files
+    - Processing logs
+    - Full remediation artifacts
+    
+    **User Package** (`remediated/final_{filename}.zip`):
+    - `remediated.html` - Final accessible HTML
+    - `result.html` - Original HTML conversion
+    - `images/` - Extracted images with alt-text
+    - `remediation_report.html` - Accessibility improvements report
+    - `usage_data.json` - Processing metrics
+  </Step>
+
+  <Step title="Upload to S3">
+    Uploads both ZIP packages to S3:
+    
+    ```python Upload Results
+    # Complete package
+    s3.upload_file(
+        complete_zip_path,
+        bucket,
+        f"output/{filename_base}.zip"
+    )
+    
+    # User-facing package
+    s3.upload_file(
+        user_zip_path,
+        bucket,
+        f"remediated/final_{filename_base}.zip"
+    )
+    ```
+  </Step>
+
+  <Step title="Cleanup">
+    Automatically deletes intermediate files from the `output/` directory:
+    
+    ```python Cleanup Intermediate Files
+    # List and delete intermediate files
+    response = s3.list_objects_v2(
+        Bucket=bucket,
+        Prefix=f"output/{filename_base}/"
+    )
+    
+    for obj in response.get('Contents', []):
+        s3.delete_object(Bucket=bucket, Key=obj['Key'])
+    ```
+  </Step>
+</Steps>
+
+## Input/Output
+
+### Input
+
+<ParamField path="event" type="object" required>
+  S3 event notification with PDF upload details
+  
+  <Expandable title="properties">
+    <ResponseField name="Records" type="array">
+      Array of S3 event records
+      
+      <Expandable title="record structure">
+        <ResponseField name="s3.bucket.name" type="string">
+          S3 bucket name (e.g., `pdf2html-bucket-123456789012-us-east-1`)
+        </ResponseField>
+        
+        <ResponseField name="s3.object.key" type="string">
+          S3 object key (e.g., `uploads/document.pdf`)
+        </ResponseField>
+      </Expandable>
+    </ResponseField>
+  </Expandable>
+</ParamField>
+
+### Output
+
+<ResponseField name="status" type="string">
+  Processing status: `success`, `skipped`, or `error`
+</ResponseField>
+
+<ResponseField name="message" type="string">
+  Descriptive message about the processing result
+</ResponseField>
+
+<ResponseField name="input" type="string">
+  S3 URI of the input PDF (e.g., `s3://bucket/uploads/document.pdf`)
+</ResponseField>
+
+<ResponseField name="output_dir" type="string">
+  S3 URI prefix for output files (e.g., `s3://bucket/output/document/`)
+</ResponseField>
+
+<ResponseField name="remediated_package" type="string">
+  S3 URI of the final user-facing ZIP package
+</ResponseField>
+
+## Example Response
+
+```json Success Response
+{
+  "status": "success",
+  "message": "PDF processed successfully",
+  "input": "s3://pdf2html-bucket-123456789012-us-east-1/uploads/sample.pdf",
+  "output_dir": "s3://pdf2html-bucket-123456789012-us-east-1/output/sample/",
+  "remediated_package": "s3://pdf2html-bucket-123456789012-us-east-1/remediated/final_sample.zip"
+}
+```
+
+```json Skipped Response (Idempotency)
+{
+  "status": "skipped",
+  "message": "Output already exists",
+  "input": "s3://pdf2html-bucket-123456789012-us-east-1/uploads/sample.pdf",
+  "output_dir": "s3://pdf2html-bucket-123456789012-us-east-1/output/sample/"
+}
+```
+
+```json Error Response
+{
+  "status": "error",
+  "message": "Download failed: Access Denied",
+  "input": "s3://pdf2html-bucket-123456789012-us-east-1/uploads/sample.pdf"
+}
+```
+
+## IAM Permissions
+
+The Lambda execution role requires:
+
+```json IAM Policy
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject",
+        "s3:ListBucket"
+      ],
+      "Resource": [
+        "arn:aws:s3:::pdf2html-bucket-*",
+        "arn:aws:s3:::pdf2html-bucket-*/*"
+      ]
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:InvokeModel",
+        "bedrock-data-automation:InvokeDataAutomationAsync",
+        "bedrock-data-automation:GetDataAutomationProject"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Effect": "Allow",
+      "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+      ],
+      "Resource": "arn:aws:logs:*:*:*"
+    }
+  ]
+}
+```
+
+## Environment Variables
+
+This Lambda function does not use explicit environment variables. The Bedrock Data Automation project ARN is discovered dynamically from the deployment.
+
+## CloudWatch Logging
+
+**Log Group:** `/aws/lambda/Pdf2HtmlPipeline`
+
+**Log Levels:**
+- `[INFO]` - Normal processing steps
+- `[DEBUG]` - Detailed debugging information
+- `[WARNING]` - Non-critical issues
+- `[ERROR]` - Processing failures with stack traces
+
+**Key Log Messages:**
+
+```log Processing Lifecycle
+[INFO] Lambda execution ID: abc-123-def-456
+[INFO] Processing s3://bucket/uploads/document.pdf
+[INFO] Original filename: my document.pdf, Sanitized filename: my_document.pdf
+[INFO] Downloaded s3://bucket/uploads/document.pdf to /tmp/my_document.pdf
+[INFO] Created temporary directory for processing: /tmp/accessibility_xyz123
+[INFO] Calling process_pdf_accessibility with output_dir=/tmp/accessibility_xyz123
+[INFO] Uploaded complete package to s3://bucket/output/my_document.zip
+[INFO] Uploaded user package to s3://bucket/remediated/final_my_document.zip
+[INFO] Cleanup completed for output/my_document/
+```
+
+## Error Handling
+
+<AccordionGroup>
+  <Accordion title="No records in event">
+    **Cause:** Malformed S3 event or invocation error
+    
+    **Response:** `{"status": "error", "message": "No records found in event"}`
+  </Accordion>
+
+  <Accordion title="File not in uploads/ folder">
+    **Cause:** S3 event for file outside `uploads/` prefix (prevents infinite loops)
+    
+    **Response:** `{"status": "skipped", "message": "Not in uploads/ folder"}`
+  </Accordion>
+
+  <Accordion title="Not a PDF file">
+    **Cause:** File uploaded without `.pdf` extension
+    
+    **Response:** `{"status": "skipped", "message": "Not a PDF file"}`
+  </Accordion>
+
+  <Accordion title="File in subfolder">
+    **Cause:** PDF uploaded to `uploads/subfolder/` instead of directly in `uploads/`
+    
+    **Response:** `{"status": "skipped", "message": "File is in a subfolder"}`
+  </Accordion>
+
+  <Accordion title="Output already exists">
+    **Cause:** PDF was already processed (idempotency check)
+    
+    **Response:** `{"status": "skipped", "message": "Output already exists"}`
+  </Accordion>
+
+  <Accordion title="Download failed">
+    **Cause:** S3 permission error or missing file
+    
+    **Response:** `{"status": "error", "message": "Download failed: {error}"}`
+  </Accordion>
+
+  <Accordion title="Processing failed">
+    **Cause:** Bedrock Data Automation error or malformed PDF
+    
+    **Response:** Returns error with full stack trace in CloudWatch logs
+  </Accordion>
+</AccordionGroup>
+
+## Performance Characteristics
+
+<Tabs>
+  <Tab title="Processing Time">
+    | PDF Size | Typical Duration |
+    |----------|------------------|
+    | 1-10 pages | 30-60 seconds |
+    | 11-50 pages | 1-3 minutes |
+    | 51-100 pages | 3-7 minutes |
+    | 100+ pages | 7-15 minutes |
+  </Tab>
+
+  <Tab title="Resource Usage">
+    - **Memory**: Scales with PDF size, typically 2-8 GB
+    - **Ephemeral Storage**: Uses /tmp for staging, cleaned automatically
+    - **Network**: Downloads/uploads can be 10-100 MB depending on PDF images
+  </Tab>
+
+  <Tab title="Cost per PDF">
+    For a 50-page PDF with images (~5 MB):
+    - Lambda compute: ~$0.12
+    - Bedrock Data Automation: ~$0.15
+    - S3 operations: Less than $0.001
+    - **Total**: ~$0.27 per document
+  </Tab>
+</Tabs>
+
+## Related Resources
+
+<CardGroup cols={2}>
+  <Card title="PDF-to-HTML Architecture" icon="sitemap" href="/architecture/pdf-to-html">
+    Understand the complete PDF-to-HTML processing architecture
+  </Card>
+  <Card title="PDF-to-HTML Workflow" icon="diagram-project" href="/usage/pdf-to-html-workflow">
+    Learn how to use the PDF-to-HTML solution
+  </Card>
+  <Card title="Bedrock Setup" icon="brain" href="/configuration/bedrock-setup">
+    Configure AWS Bedrock Data Automation
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/operations/troubleshooting">
+    Resolve common PDF2HTML processing issues
+  </Card>
+</CardGroup>

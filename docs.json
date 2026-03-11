@@ -83,7 +83,8 @@
               "api/pdf-splitter",
               "api/pdf-merger",
               "api/title-generator",
-              "api/accessibility-checker"
+              "api/accessibility-checker",
+              "api/pdf2html-pipeline"
             ]
           },
           {
