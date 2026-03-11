@@ -1,0 +1,484 @@
+---
+title: "IAM Permissions"
+description: "Required IAM roles and policies for deploying and running the PDF Accessibility solution"
+---
+
+The PDF Accessibility solution follows the **principle of least privilege** with scoped IAM policies for all components. This page documents the required permissions for both solutions.
+
+## Permission Overview
+
+The solution requires three types of IAM permissions:
+
+1. **Deployment Permissions** — For CodeBuild to deploy the CDK infrastructure
+2. **Runtime Permissions** — For Lambda functions and ECS tasks during operation
+3. **User Permissions** — For users accessing the frontend UI (managed by Cognito)
+
+<Note>
+All policies are automatically created during deployment. This page documents what permissions are used for transparency and troubleshooting.
+</Note>
+
+## PDF-to-PDF Solution Permissions
+
+### Lambda Execution Role
+
+All Lambda functions require basic CloudWatch logging and S3 access:
+
+#### S3 Bucket Access
+
+<CodeGroup>
+
+```json S3 Read/Write
+{
+    "Sid": "S3BucketAccess",
+    "Effect": "Allow",
+    "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+    ],
+    "Resource": [
+        "arn:aws:s3:::${BucketName}",
+        "arn:aws:s3:::${BucketName}/*"
+    ]
+}
+```
+
+</CodeGroup>
+
+**Applies to:** All Lambda functions (PDF Splitter, PDF Merger, Title Generator, Accessibility Checkers)
+
+**Granted by:** `pdf_processing_bucket.grant_read_write()` in `app.py`
+
+#### CloudWatch Metrics
+
+<CodeGroup>
+
+```json CloudWatch PutMetricData
+{
+    "Sid": "CloudWatchMetrics",
+    "Effect": "Allow",
+    "Action": ["cloudwatch:PutMetricData"],
+    "Resource": "*"
+}
+```
+
+</CodeGroup>
+
+<Note>
+`cloudwatch:PutMetricData` does not support resource-level permissions, so `Resource: "*"` is required.
+</Note>
+
+**Applies to:** All Lambda functions
+
+**Configuration Location:** `app.py:242`
+
+#### Bedrock Model Access (Title Generator)
+
+The Title Generator Lambda requires access to Bedrock foundation models:
+
+<CodeGroup>
+
+```json Bedrock InvokeModel
+{
+    "Sid": "BedrockInvokeModel",
+    "Effect": "Allow",
+    "Action": ["bedrock:InvokeModel"],
+    "Resource": [
+        "arn:aws:bedrock:${Region}::foundation-model/us.amazon.nova-pro-v1:0",
+        "arn:aws:bedrock:${Region}::foundation-model/amazon.nova-pro-v1:0"
+    ]
+}
+```
+
+</CodeGroup>
+
+**Applies to:** Title Generator Lambda only
+
+**Configuration Location:** `app.py:302`
+
+<Warning>
+Bedrock model access must be **explicitly enabled** in the Bedrock console before deployment. See [Bedrock Setup](/configuration/bedrock-setup) for details.
+</Warning>
+
+#### Secrets Manager Access (Accessibility Checkers)
+
+Pre- and post-remediation checkers need Adobe API credentials:
+
+<CodeGroup>
+
+```json Secrets Manager Read
+{
+    "Sid": "SecretsManagerAccess",
+    "Effect": "Allow",
+    "Action": ["secretsmanager:GetSecretValue"],
+    "Resource": "arn:aws:secretsmanager:${Region}:${AccountId}:secret:/myapp/*"
+}
+```
+
+</CodeGroup>
+
+**Applies to:** Pre-Remediation Checker, Post-Remediation Checker
+
+**Configuration Location:** `app.py:322`, `app.py:348`
+
+### ECS Task Role
+
+ECS tasks (Adobe AutoTag and Alt Text Generator) require more extensive permissions:
+
+#### S3 Access
+
+<CodeGroup>
+
+```json ECS Task S3 Permissions
+{
+    "Sid": "S3BucketAccess",
+    "Effect": "Allow",
+    "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:DeleteObject"
+    ],
+    "Resource": [
+        "arn:aws:s3:::${BucketName}",
+        "arn:aws:s3:::${BucketName}/*"
+    ]
+}
+```
+
+</CodeGroup>
+
+**Configuration Location:** `app.py:110`
+
+#### Bedrock Model Invocation
+
+<CodeGroup>
+
+```json ECS Bedrock Access
+{
+    "Sid": "BedrockInvokeModel",
+    "Effect": "Allow",
+    "Action": ["bedrock:InvokeModel"],
+    "Resource": ["*"]
+}
+```
+
+</CodeGroup>
+
+<Note>
+The wildcard resource is used here to allow flexibility in model selection. In production, scope this to specific model ARNs.
+</Note>
+
+**Configuration Location:** `app.py:104`
+
+#### Comprehend Language Detection
+
+<CodeGroup>
+
+```json Comprehend DetectDominantLanguage
+{
+    "Sid": "ComprehendLanguageDetection",
+    "Effect": "Allow",
+    "Action": ["comprehend:DetectDominantLanguage"],
+    "Resource": "*"
+}
+```
+
+</CodeGroup>
+
+<Note>
+`comprehend:DetectDominantLanguage` does not support resource-level permissions.
+</Note>
+
+**Configuration Location:** `app.py:123`
+
+#### Secrets Manager Access
+
+<CodeGroup>
+
+```json ECS Secrets Manager
+{
+    "Sid": "SecretsManagerAccess",
+    "Effect": "Allow",
+    "Action": ["secretsmanager:GetSecretValue"],
+    "Resource": "arn:aws:secretsmanager:${Region}:${AccountId}:secret:/myapp/*"
+}
+```
+
+</CodeGroup>
+
+**Configuration Location:** `app.py:129`
+
+### Step Functions Execution Role
+
+The Step Functions state machine automatically receives permissions to:
+
+- Invoke Lambda functions
+- Start ECS tasks
+- Write logs to CloudWatch
+
+These permissions are granted automatically by CDK using `grant_start_execution()` and task integration patterns.
+
+## PDF-to-HTML Solution Permissions
+
+### Lambda Execution Role
+
+The PDF-to-HTML Lambda requires comprehensive permissions for S3 and Bedrock:
+
+#### S3 Permissions
+
+<CodeGroup>
+
+```json PDF-to-HTML S3 Access
+{
+    "Sid": "S3BucketAccess",
+    "Effect": "Allow",
+    "Action": [
+        "s3:GetObject",
+        "s3:PutObject",
+        "s3:ListBucket",
+        "s3:DeleteObject",
+        "s3:DeleteObjects",
+        "s3:ListObjects",
+        "s3:ListObjectsV2",
+        "s3:GetBucketLocation",
+        "s3:GetObjectVersion",
+        "s3:GetBucketPolicy"
+    ],
+    "Resource": [
+        "arn:aws:s3:::${BucketName}",
+        "arn:aws:s3:::${BucketName}/*"
+    ]
+}
+```
+
+</CodeGroup>
+
+#### Bedrock Model Invocation
+
+<CodeGroup>
+
+```json Bedrock Model Access
+{
+    "Sid": "BedrockModelInvocation",
+    "Effect": "Allow",
+    "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+    ],
+    "Resource": [
+        "arn:aws:bedrock:${Region}::foundation-model/us.amazon.nova-lite-v1:0",
+        "arn:aws:bedrock:${Region}::foundation-model/amazon.nova-lite-v1:0",
+        "arn:aws:bedrock:${Region}::foundation-model/us.amazon.nova-pro-v1:0",
+        "arn:aws:bedrock:${Region}::foundation-model/amazon.nova-pro-v1:0"
+    ]
+}
+```
+
+</CodeGroup>
+
+#### Bedrock Data Automation
+
+<CodeGroup>
+
+```json Bedrock Data Automation
+{
+    "Sid": "BedrockDataAutomation",
+    "Effect": "Allow",
+    "Action": [
+        "bedrock:InvokeDataAutomationAsync",
+        "bedrock:GetDataAutomationStatus",
+        "bedrock:GetDataAutomationProject"
+    ],
+    "Resource": [
+        "${BdaProjectArn}",
+        "arn:aws:bedrock:${Region}:${AccountId}:data-automation-invocation/*",
+        "arn:aws:bedrock:${Region}:${AccountId}:data-automation-profile/*"
+    ]
+}
+```
+
+</CodeGroup>
+
+<Warning>
+Bedrock Data Automation requires a pre-created BDA project. The project ARN is passed during deployment.
+</Warning>
+
+#### CloudWatch Logs
+
+<CodeGroup>
+
+```json Lambda CloudWatch Logs
+{
+    "Sid": "CloudWatchLogs",
+    "Effect": "Allow",
+    "Action": [
+        "logs:CreateLogGroup",
+        "logs:CreateLogStream",
+        "logs:PutLogEvents"
+    ],
+    "Resource": "arn:aws:logs:${Region}:${AccountId}:log-group:/aws/lambda/Pdf2HtmlPipeline:*"
+}
+```
+
+</CodeGroup>
+
+## Deployment Permissions (CodeBuild)
+
+The CodeBuild service role requires extensive permissions to deploy CDK stacks. These are automatically created during deployment.
+
+### PDF-to-PDF Deployment Policy
+
+The CodeBuild role for PDF-to-PDF deployment includes:
+
+- **S3:** Full access to `cdk-*` and `pdfaccessibility*` buckets
+- **ECR:** Full access to `cdk-*` repositories and authorization token
+- **Lambda:** Full Lambda function management
+- **ECS:** Full ECS cluster, task definition, and service management
+- **EC2:** Full VPC and networking management
+- **Step Functions:** State machine creation and management
+- **IAM:** Role and policy management for `PDFAccessibility*` and `cdk-*` roles
+- **CloudFormation:** Stack operations for `PDFAccessibility*` and `CDKToolkit` stacks
+- **Secrets Manager:** Read/write to `/myapp/*` secrets
+- **CloudWatch:** Dashboard and metrics management
+- **Logs:** Log group creation for `/aws/codebuild/*`, `/aws/lambda/*`, `/ecs/*`, `/aws/states/*`
+
+**Configuration Location:** `deploy.sh:203-308`
+
+### PDF-to-HTML Deployment Policy
+
+The CodeBuild role for PDF-to-HTML deployment includes:
+
+- **S3:** Full access to `cdk-*` and `pdf2html-*` buckets
+- **ECR:** Repository management and authorization
+- **Lambda:** Function management for `Pdf2Html*` and `pdf2html*` functions
+- **Bedrock:** Data Automation project creation and management
+- **IAM:** Role and policy management for `Pdf2Html*` and `pdf2html*` roles
+- **CloudFormation:** Stack operations for `Pdf2Html*` and `pdf2html*` stacks
+- **Logs:** Log group creation for CodeBuild and Lambda
+
+**Configuration Location:** `deploy.sh:310-390`
+
+<Warning>
+Deployment policies use wildcards for some resources due to AWS IAM policy size limits (6,144 characters max). Resources are scoped to specific naming patterns where possible.
+</Warning>
+
+## Security Best Practices
+
+### Principle of Least Privilege
+
+All IAM policies follow least privilege principles:
+
+- **Actions** are limited to only those required for the specific operation
+- **Resources** are scoped to specific ARN patterns where AWS supports it
+- **Wildcards** are only used where AWS does not support resource-level permissions
+
+### Services Without Resource-Level Permissions
+
+The following actions require `Resource: "*"` because AWS does not support resource-level scoping:
+
+- `cloudwatch:PutMetricData`
+- `comprehend:DetectDominantLanguage`
+- `ecr:GetAuthorizationToken`
+- `sts:GetCallerIdentity`
+- EC2 VPC-related describe operations
+- ECS cluster and task definition operations
+
+### Sensitive Data Protection
+
+<Warning>
+Adobe API credentials are stored in AWS Secrets Manager at `/myapp/client_credentials`. Never commit credentials to source control.
+</Warning>
+
+- All S3 buckets use server-side encryption (SSE-S3)
+- VPC configuration isolates ECS tasks in private subnets (PDF-to-PDF solution)
+- IAM roles are scoped to specific resource patterns
+- Secrets Manager encrypts credentials at rest and in transit
+
+## Troubleshooting Permission Issues
+
+### Common Errors
+
+<AccordionGroup>
+
+<Accordion title="AccessDenied: User is not authorized to perform bedrock:InvokeModel">
+
+**Cause:** Bedrock model access not enabled in the Bedrock console.
+
+**Solution:**
+
+1. Open the [Amazon Bedrock console](https://console.aws.amazon.com/bedrock/)
+2. Navigate to **Model access** in the left sidebar
+3. Click **Enable specific models**
+4. Enable the required models (Nova Pro, Nova Lite)
+5. Wait for access to be granted (usually within a few minutes)
+6. Redeploy the solution
+
+See [Bedrock Setup](/configuration/bedrock-setup) for detailed instructions.
+
+</Accordion>
+
+<Accordion title="AccessDenied: Cannot access S3 bucket">
+
+**Cause:** Lambda/ECS role does not have S3 permissions.
+
+**Solution:** Verify the role policy includes `s3:GetObject`, `s3:PutObject`, and `s3:DeleteObject` for the specific bucket ARN. Check CloudWatch Logs for the exact error message.
+
+</Accordion>
+
+<Accordion title="SecretNotFound: Secrets Manager secret not found">
+
+**Cause:** Adobe credentials not created in Secrets Manager.
+
+**Solution:** Run the deployment script which creates the secret, or manually create it:
+
+```bash
+aws secretsmanager create-secret \
+  --name /myapp/client_credentials \
+  --secret-string '{
+    "client_credentials": {
+      "PDF_SERVICES_CLIENT_ID": "your-client-id",
+      "PDF_SERVICES_CLIENT_SECRET": "your-client-secret"
+    }
+  }'
+```
+
+See [Adobe Credentials](/configuration/adobe-credentials) for details.
+
+</Accordion>
+
+<Accordion title="InsufficientCapacityException: VPC has no available Elastic IPs">
+
+**Cause:** AWS account has reached the Elastic IP limit.
+
+**Solution:** Request a quota increase for EC2-VPC Elastic IPs in the [Service Quotas console](https://console.aws.amazon.com/servicequotas/). See [Limits and Quotas](/configuration/limits-and-quotas) for details.
+
+</Accordion>
+
+</AccordionGroup>
+
+### Permission Validation
+
+Before deployment, verify your AWS credentials have the required permissions:
+
+<CodeGroup>
+
+```bash Verify AWS Identity
+aws sts get-caller-identity
+```
+
+```bash List Bedrock Models
+aws bedrock list-foundation-models --region us-west-2
+```
+
+```bash Check IAM User
+aws iam get-user
+```
+
+</CodeGroup>
+
+## Related Resources
+
+- [Adobe Credentials Setup](/configuration/adobe-credentials) — Configure Secrets Manager for Adobe API
+- [Bedrock Setup](/configuration/bedrock-setup) — Enable Bedrock model access
+- [Limits and Quotas](/configuration/limits-and-quotas) — Service quota requirements
+- [Deployment Guide](/deployment/prerequisites) — Initial setup and permissions

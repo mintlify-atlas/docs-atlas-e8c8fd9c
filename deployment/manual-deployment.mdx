@@ -1,0 +1,823 @@
+---
+title: "Manual Deployment"
+description: "Deploy PDF accessibility solutions using AWS CDK commands"
+---
+
+For advanced users who prefer direct control over the deployment process, you can manually deploy either solution using AWS CDK. This approach provides more flexibility and is useful for customization or CI/CD integration.
+
+<Warning>
+  Manual deployment requires familiarity with AWS CDK, Docker, and AWS services. For most users, we recommend the [One-Click Deployment](/deployment/one-click-deployment) method.
+</Warning>
+
+---
+
+## When to Use Manual Deployment
+
+Choose manual deployment if you need to:
+
+- Customize CDK stack parameters
+- Integrate with existing CI/CD pipelines
+- Debug infrastructure deployment issues
+- Modify resource configurations before deployment
+- Deploy from a local development environment (not CloudShell)
+
+---
+
+## Prerequisites
+
+Before starting manual deployment, ensure you have:
+
+### Local Development Tools
+
+<Tabs>
+  <Tab title="macOS/Linux">
+    <Steps>
+      <Step title="Python 3.12 or later">
+        ```bash
+        python3 --version
+        # Should show Python 3.12.x or later
+        ```
+        
+        [Download Python](https://www.python.org/downloads/) if needed.
+      </Step>
+
+      <Step title="Node.js and npm">
+        ```bash
+        node --version  # Should be v18.x or later
+        npm --version
+        ```
+        
+        [Download Node.js](https://nodejs.org/) if needed.
+      </Step>
+
+      <Step title="AWS CLI">
+        ```bash
+        aws --version
+        ```
+        
+        [Install AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2.html) if needed.
+      </Step>
+
+      <Step title="AWS CDK">
+        ```bash
+        npm install -g aws-cdk
+        cdk --version
+        ```
+      </Step>
+
+      <Step title="Docker">
+        ```bash
+        docker --version
+        ```
+        
+        [Install Docker](https://docs.docker.com/get-docker/) if needed.
+        
+        <Warning>
+          Ensure Docker Desktop is running before deployment.
+        </Warning>
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="Windows">
+    <Steps>
+      <Step title="Python 3.12 or later">
+        ```powershell
+        python --version
+        # Should show Python 3.12.x or later
+        ```
+        
+        [Download Python](https://www.python.org/downloads/) if needed.
+        
+        Verify Python path:
+        ```powershell
+        where python
+        ```
+      </Step>
+
+      <Step title="Node.js and npm">
+        ```powershell
+        node --version  # Should be v18.x or later
+        npm --version
+        ```
+        
+        [Download Node.js](https://nodejs.org/) if needed.
+      </Step>
+
+      <Step title="AWS CLI">
+        ```powershell
+        aws --version
+        ```
+        
+        [Install AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/install-cliv2-windows.html) if needed.
+      </Step>
+
+      <Step title="AWS CDK">
+        ```powershell
+        npm install -g aws-cdk
+        cdk --version
+        ```
+      </Step>
+
+      <Step title="Docker Desktop">
+        ```powershell
+        docker --version
+        ```
+        
+        [Install Docker Desktop](https://docs.docker.com/desktop/install/windows-install/) if needed.
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+### AWS Configuration
+
+Configure AWS credentials:
+
+```bash
+aws configure
+```
+
+Enter your:
+- AWS Access Key ID
+- AWS Secret Access Key
+- Default region (e.g., `us-east-1`)
+- Output format (e.g., `json`)
+
+<Note>
+  For production deployments, consider using [IAM roles](https://docs.aws.amazon.com/IAM/latest/UserGuide/id_roles.html) instead of access keys.
+</Note>
+
+---
+
+## PDF-to-PDF Manual Deployment
+
+### Step 1: Clone and Setup
+
+<Steps>
+  <Step title="Clone the Repository">
+    ```bash
+    git clone https://github.com/ASUCICREPO/PDF_Accessibility.git
+    cd PDF_Accessibility
+    ```
+  </Step>
+
+  <Step title="Create Virtual Environment">
+    <Tabs>
+      <Tab title="macOS/Linux">
+        ```bash
+        python3 -m venv .venv
+        source .venv/bin/activate
+        ```
+      </Tab>
+      <Tab title="Windows">
+        ```powershell
+        python -m venv .venv
+        .venv\Scripts\activate
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Install Python Dependencies">
+    ```bash
+    pip install --upgrade pip
+    pip install -r requirements.txt
+    ```
+  </Step>
+</Steps>
+
+### Step 2: Configure Adobe Credentials
+
+<Steps>
+  <Step title="Create Credentials File">
+    Create `client_credentials.json` in the project root:
+    
+    ```json client_credentials.json
+    {
+      "client_credentials": {
+        "PDF_SERVICES_CLIENT_ID": "your-client-id-here",
+        "PDF_SERVICES_CLIENT_SECRET": "your-client-secret-here"
+      }
+    }
+    ```
+    
+    <Warning>
+      Replace `your-client-id-here` and `your-client-secret-here` with your actual Adobe credentials. Do NOT commit this file to version control.
+    </Warning>
+  </Step>
+
+  <Step title="Upload to AWS Secrets Manager">
+    <Tabs>
+      <Tab title="macOS/Linux">
+        **Create new secret:**
+        ```bash
+        aws secretsmanager create-secret \
+            --name /myapp/client_credentials \
+            --description "Client credentials for PDF services" \
+            --secret-string file://client_credentials.json
+        ```
+        
+        **Update existing secret:**
+        ```bash
+        aws secretsmanager update-secret \
+            --secret-id /myapp/client_credentials \
+            --description "Updated client credentials for PDF services" \
+            --secret-string file://client_credentials.json
+        ```
+      </Tab>
+      <Tab title="Windows">
+        **Create new secret:**
+        ```powershell
+        aws secretsmanager create-secret --name /myapp/client_credentials --description "Client credentials for PDF services" --secret-string file://client_credentials.json
+        ```
+        
+        **Update existing secret:**
+        ```powershell
+        aws secretsmanager update-secret --secret-id /myapp/client_credentials --description "Updated client credentials for PDF services" --secret-string file://client_credentials.json
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+
+  <Step title="Delete Local Credentials File">
+    ```bash
+    rm client_credentials.json  # macOS/Linux
+    # or
+    del client_credentials.json  # Windows
+    ```
+  </Step>
+</Steps>
+
+### Step 3: Bootstrap CDK Environment
+
+Run CDK bootstrap (only needed once per AWS account/region):
+
+```bash
+cdk bootstrap
+```
+
+This creates:
+- S3 bucket for CDK staging assets
+- IAM roles for CloudFormation deployment
+- ECR repository for Docker images
+- SSM parameters for CDK configuration
+
+<Note>
+  If bootstrap fails with permissions errors, ensure your AWS user has administrator access or the specific permissions listed in the [IAM Permissions Guide](/deployment/iam-permissions).
+</Note>
+
+### Step 4: Connect to ECR
+
+Authenticate Docker with Amazon ECR:
+
+```bash
+AWS_ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+AWS_REGION=$(aws configure get region)
+
+aws ecr get-login-password --region $AWS_REGION | \
+  docker login --username AWS --password-stdin \
+  $AWS_ACCOUNT_ID.dkr.ecr.$AWS_REGION.amazonaws.com
+```
+
+<Warning>
+  Ensure Docker Desktop is running before executing this command.
+</Warning>
+
+### Step 5: Set Environment Variable
+
+Set a required environment variable to prevent CDK deployment issues:
+
+<Tabs>
+  <Tab title="macOS/Linux">
+    ```bash
+    export BUILDX_NO_DEFAULT_ATTESTATIONS=1
+    ```
+  </Tab>
+  <Tab title="Windows">
+    ```powershell
+    set BUILDX_NO_DEFAULT_ATTESTATIONS=1
+    ```
+  </Tab>
+</Tabs>
+
+<Note>
+  This prevents Docker buildx attestation issues during CDK deployment. See [troubleshooting guide](https://github.com/aws/aws-cdk/issues/30258) for details.
+</Note>
+
+### Step 6: Deploy the Stack
+
+<Tabs>
+  <Tab title="Deploy All Stacks">
+    ```bash
+    cdk deploy --all --require-approval never
+    ```
+    
+    This deploys:
+    - Main CDK stack (PDFAccessibility)
+    - VPC and networking infrastructure
+    - S3 bucket for PDF storage
+    - Lambda functions (splitter, merger, title-generator, accessibility checkers)
+    - ECS cluster and task definitions
+    - Step Functions state machine
+    - CloudWatch dashboard
+  </Tab>
+  <Tab title="Deploy Specific Stack">
+    ```bash
+    cdk deploy PDFAccessibility --require-approval never
+    ```
+  </Tab>
+  <Tab title="Preview Changes">
+    ```bash
+    cdk diff
+    ```
+    
+    This shows what will be deployed without actually deploying.
+  </Tab>
+</Tabs>
+
+### Deployment Output
+
+Successful deployment shows:
+
+```bash
+ ✅  PDFAccessibility
+
+Outputs:
+PDFAccessibility.S3BucketName = pdfaccessibility-123456789012-us-east-1
+PDFAccessibility.StateMachineArn = arn:aws:states:us-east-1:123456789012:stateMachine:PDFProcessingStateMachine
+PDFAccessibility.DashboardName = PDFAccessibilityDashboard
+
+Stack ARN:
+arn:aws:cloudformation:us-east-1:123456789012:stack/PDFAccessibility/...
+```
+
+---
+
+## PDF-to-HTML Manual Deployment
+
+### Step 1: Clone and Setup
+
+<Steps>
+  <Step title="Clone the Repository">
+    ```bash
+    git clone https://github.com/ASUCICREPO/PDF_Accessibility.git
+    cd PDF_Accessibility/pdf2html
+    ```
+  </Step>
+
+  <Step title="Set Environment Variables">
+    ```bash
+    export ACCOUNT_ID=$(aws sts get-caller-identity --query Account --output text)
+    export REGION=$(aws configure get region)
+    export BUCKET_NAME="pdf2html-bucket-$ACCOUNT_ID-$REGION"
+    ```
+  </Step>
+</Steps>
+
+### Step 2: Create Bedrock Data Automation Project
+
+```bash
+BDA_PROJECT_NAME="pdf2html-bda-project-$(date +%Y%m%d-%H%M%S)"
+
+BDA_RESPONSE=$(aws bedrock-data-automation create-data-automation-project \
+    --project-name "$BDA_PROJECT_NAME" \
+    --standard-output-configuration '{
+        "document": {
+            "extraction": {
+                "granularity": {
+                    "types": ["DOCUMENT", "PAGE", "ELEMENT"]
+                },
+                "boundingBox": {
+                    "state": "ENABLED"
+                }
+            },
+            "generativeField": {
+                "state": "DISABLED"
+            },
+            "outputFormat": {
+                "textFormat": {
+                    "types": ["HTML"]
+                },
+                "additionalFileFormat": {
+                    "state": "ENABLED"
+                }
+            }
+        }
+    }' \
+    --region $REGION)
+
+BDA_PROJECT_ARN=$(echo $BDA_RESPONSE | jq -r '.projectArn')
+echo "BDA Project ARN: $BDA_PROJECT_ARN"
+```
+
+<Note>
+  The BDA project configures extraction granularity, bounding boxes, and output format for PDF processing.
+</Note>
+
+### Step 3: Create S3 Bucket
+
+<Tabs>
+  <Tab title="us-east-1">
+    ```bash
+    aws s3api create-bucket \
+        --bucket $BUCKET_NAME \
+        --region $REGION
+    
+    aws s3api put-bucket-versioning \
+        --bucket $BUCKET_NAME \
+        --versioning-configuration Status=Enabled
+    
+    # Create folder structure
+    aws s3api put-object --bucket $BUCKET_NAME --key uploads/
+    aws s3api put-object --bucket $BUCKET_NAME --key output/
+    aws s3api put-object --bucket $BUCKET_NAME --key remediated/
+    ```
+  </Tab>
+  <Tab title="Other Regions">
+    ```bash
+    aws s3api create-bucket \
+        --bucket $BUCKET_NAME \
+        --region $REGION \
+        --create-bucket-configuration LocationConstraint=$REGION
+    
+    aws s3api put-bucket-versioning \
+        --bucket $BUCKET_NAME \
+        --versioning-configuration Status=Enabled
+    
+    # Create folder structure
+    aws s3api put-object --bucket $BUCKET_NAME --key uploads/
+    aws s3api put-object --bucket $BUCKET_NAME --key output/
+    aws s3api put-object --bucket $BUCKET_NAME --key remediated/
+    ```
+  </Tab>
+</Tabs>
+
+### Step 4: Build and Push Docker Image
+
+<Steps>
+  <Step title="Create ECR Repository">
+    ```bash
+    aws ecr create-repository \
+        --repository-name pdf2html-lambda \
+        --region $REGION
+    ```
+  </Step>
+
+  <Step title="Authenticate Docker with ECR">
+    ```bash
+    aws ecr get-login-password --region $REGION | \
+      docker login --username AWS --password-stdin \
+      $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
+    ```
+  </Step>
+
+  <Step title="Build Docker Image">
+    ```bash
+    REPO_URI="$ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com/pdf2html-lambda"
+    
+    docker build --platform linux/amd64 --no-cache -t $REPO_URI:latest .
+    ```
+    
+    <Note>
+      Building for `linux/amd64` ensures compatibility with AWS Lambda.
+    </Note>
+  </Step>
+
+  <Step title="Push to ECR">
+    ```bash
+    docker push $REPO_URI:latest
+    ```
+  </Step>
+
+  <Step title="Verify Image">
+    ```bash
+    aws ecr describe-images \
+        --repository-name pdf2html-lambda \
+        --region $REGION \
+        --image-ids imageTag=latest
+    ```
+  </Step>
+</Steps>
+
+### Step 5: Deploy CDK Stack
+
+<Steps>
+  <Step title="Navigate to CDK Directory">
+    ```bash
+    cd cdk
+    ```
+  </Step>
+
+  <Step title="Install CDK Dependencies">
+    ```bash
+    npm install
+    ```
+  </Step>
+
+  <Step title="Set CDK Environment Variables">
+    ```bash
+    export CDK_DEFAULT_ACCOUNT=$ACCOUNT_ID
+    export CDK_DEFAULT_REGION=$REGION
+    ```
+  </Step>
+
+  <Step title="Bootstrap CDK">
+    ```bash
+    npx cdk bootstrap aws://$ACCOUNT_ID/$REGION
+    ```
+  </Step>
+
+  <Step title="Deploy Stack">
+    ```bash
+    npx cdk deploy \
+        --app "node bin/app.js" \
+        --parameters BdaProjectArn=$BDA_PROJECT_ARN \
+        --parameters BucketName=$BUCKET_NAME \
+        --require-approval never
+    ```
+  </Step>
+</Steps>
+
+### Deployment Output
+
+Successful deployment shows:
+
+```bash
+ ✅  Pdf2HtmlStack
+
+Outputs:
+Pdf2HtmlStack.BucketName = pdf2html-bucket-123456789012-us-east-1
+Pdf2HtmlStack.LambdaFunctionName = Pdf2HtmlPipeline
+Pdf2HtmlStack.BdaProjectArn = arn:aws:bedrock:us-east-1:123456789012:data-automation-project/...
+
+Stack ARN:
+arn:aws:cloudformation:us-east-1:123456789012:stack/Pdf2HtmlStack/...
+```
+
+---
+
+## Verification
+
+After deployment, verify the infrastructure:
+
+### PDF-to-PDF Verification
+
+```bash
+# Check CloudFormation stack
+aws cloudformation describe-stacks --stack-name PDFAccessibility
+
+# List Lambda functions
+aws lambda list-functions \
+    --query 'Functions[?contains(FunctionName, `PDF`)].FunctionName'
+
+# Verify S3 bucket
+aws s3 ls | grep pdfaccessibility
+
+# Check Step Functions state machine
+aws stepfunctions list-state-machines
+
+# View ECS cluster
+aws ecs list-clusters
+aws ecs list-task-definitions
+```
+
+### PDF-to-HTML Verification
+
+```bash
+# Check CloudFormation stack
+aws cloudformation describe-stacks --stack-name Pdf2HtmlStack
+
+# Verify Lambda function
+aws lambda get-function --function-name Pdf2HtmlPipeline
+
+# Check S3 bucket
+aws s3 ls s3://$BUCKET_NAME/
+
+# Verify ECR image
+aws ecr describe-images \
+    --repository-name pdf2html-lambda \
+    --image-ids imageTag=latest
+
+# Check BDA project
+aws bedrock-data-automation list-data-automation-projects
+```
+
+---
+
+## Troubleshooting Manual Deployment
+
+<AccordionGroup>
+  <Accordion title="CDK Deploy Fails with Python Not Found (Windows)">
+    **Symptom:**
+    ```
+    Python was not found; run without arguments to install from the Microsoft Store
+    Subprocess exited with error 9009
+    ```
+    
+    **Solution:**
+    Edit `cdk.json` and change:
+    ```json
+    "app": "python3 app.py"
+    ```
+    to:
+    ```json
+    "app": "python app.py"
+    ```
+  </Accordion>
+
+  <Accordion title="Docker Build Fails">
+    **Symptom:**
+    ```
+    ERROR: Docker build failed!
+    ```
+    
+    **Solution:**
+    - Ensure Docker Desktop is running
+    - Check Docker version: `docker --version`
+    - Try building with verbose output:
+      ```bash
+      docker build --progress=plain -t test .
+      ```
+    - Verify Dockerfile syntax
+  </Accordion>
+
+  <Accordion title="ECR Push Authentication Error">
+    **Symptom:**
+    ```
+    no basic auth credentials
+    ```
+    
+    **Solution:**
+    Re-authenticate with ECR:
+    ```bash
+    aws ecr get-login-password --region $REGION | \
+      docker login --username AWS --password-stdin \
+      $ACCOUNT_ID.dkr.ecr.$REGION.amazonaws.com
+    ```
+  </Accordion>
+
+  <Accordion title="Lambda Function Creation Fails">
+    **Symptom:**
+    ```
+    The image with imageId ... does not exist within the repository
+    ```
+    
+    **Solution:**
+    Verify the Docker image exists in ECR:
+    ```bash
+    aws ecr list-images --repository-name pdf2html-lambda
+    ```
+    
+    If missing, rebuild and push the image (Step 4).
+  </Accordion>
+
+  <Accordion title="Bedrock Access Denied">
+    **Symptom:**
+    ```
+    AccessDeniedException: User is not authorized to perform: bedrock:CreateDataAutomationProject
+    ```
+    
+    **Solution:**
+    - Verify Bedrock permissions in IAM
+    - Enable Bedrock model access in console
+    - Check if Bedrock Data Automation is available in your region
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Stack Cleanup
+
+To remove deployed infrastructure:
+
+### PDF-to-PDF Cleanup
+
+```bash
+# Delete CDK stack
+cdk destroy --all
+
+# Delete S3 bucket (if not automatically deleted)
+BUCKET_NAME=$(aws s3 ls | grep pdfaccessibility | awk '{print $3}')
+aws s3 rm s3://$BUCKET_NAME --recursive
+aws s3api delete-bucket --bucket $BUCKET_NAME
+
+# Delete Secrets Manager secret
+aws secretsmanager delete-secret \
+    --secret-id /myapp/client_credentials \
+    --force-delete-without-recovery
+```
+
+### PDF-to-HTML Cleanup
+
+```bash
+# Delete CDK stack
+cd pdf2html/cdk
+npx cdk destroy
+
+# Delete S3 bucket
+aws s3 rm s3://$BUCKET_NAME --recursive
+aws s3api delete-bucket --bucket $BUCKET_NAME
+
+# Delete ECR repository
+aws ecr delete-repository \
+    --repository-name pdf2html-lambda \
+    --force
+
+# Delete BDA project
+aws bedrock-data-automation delete-data-automation-project \
+    --project-arn $BDA_PROJECT_ARN
+```
+
+<Warning>
+  Stack cleanup is irreversible. Ensure you've backed up any important data before deleting resources.
+</Warning>
+
+---
+
+## Environment Configuration
+
+### Custom CDK Context
+
+Modify `cdk.json` to customize deployment:
+
+```json cdk.json
+{
+  "app": "python3 app.py",
+  "context": {
+    "@aws-cdk/core:enableStackNameDuplicates": false,
+    "@aws-cdk/core:stackRelativeExports": true,
+    
+    // Custom configurations
+    "bucket-name": "my-custom-bucket-name",
+    "lambda-memory": 3008,
+    "lambda-timeout": 900
+  }
+}
+```
+
+### CDK Stack Parameters
+
+Pass parameters during deployment:
+
+```bash
+cdk deploy \
+    --parameters BucketName=my-custom-bucket \
+    --parameters LambdaMemory=4096 \
+    --parameters LambdaTimeout=900
+```
+
+---
+
+## CI/CD Integration
+
+### GitHub Actions Example
+
+```yaml .github/workflows/deploy.yml
+name: Deploy PDF Accessibility
+
+on:
+  push:
+    branches:
+      - main
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v3
+      
+      - name: Configure AWS Credentials
+        uses: aws-actions/configure-aws-credentials@v2
+        with:
+          aws-access-key-id: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          aws-secret-access-key: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          aws-region: us-east-1
+      
+      - name: Install Dependencies
+        run: |
+          npm install -g aws-cdk
+          pip install -r requirements.txt
+      
+      - name: Deploy CDK Stack
+        run: |
+          cdk deploy --all --require-approval never
+```
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Test Deployment" icon="flask" href="/usage/pdf-to-pdf-workflow">
+    Verify your manual deployment works correctly
+  </Card>
+  <Card title="Monitor Resources" icon="chart-line" href="/operations/monitoring">
+    Set up monitoring and alerts
+  </Card>
+  <Card title="Deploy UI" icon="browser" href="/deployment/ui-deployment">
+    Add a web interface for end users
+  </Card>
+  <Card title="Troubleshooting" icon="wrench" href="/operations/troubleshooting">
+    Resolve deployment issues
+  </Card>
+</CardGroup>

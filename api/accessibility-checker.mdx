@@ -1,0 +1,519 @@
+---
+title: 'Accessibility Checker Lambda'
+description: 'Audits PDF accessibility using Adobe PDF Services API before and after remediation'
+---
+
+## Overview
+
+The Accessibility Checker Lambda functions validate PDF accessibility compliance using Adobe PDF Services API. Two separate functions run:
+
+1. **Pre-Remediation Checker**: Audits the original PDF before processing
+2. **Post-Remediation Checker**: Audits the final PDF after remediation and title generation
+
+Both functions generate comprehensive JSON accessibility reports and upload them to S3 for tracking compliance improvements.
+
+## Function Details
+
+### Pre-Remediation Checker
+
+<ParamField path="handler" type="string" required>
+  `main.lambda_handler`
+</ParamField>
+
+<ParamField path="runtime" type="string" required>
+  Python 3.12
+</ParamField>
+
+<ParamField path="timeout" type="number">
+  900 seconds (15 minutes)
+</ParamField>
+
+<ParamField path="memory" type="number">
+  512 MB
+</ParamField>
+
+### Post-Remediation Checker
+
+<ParamField path="handler" type="string" required>
+  `main.lambda_handler`
+</ParamField>
+
+<ParamField path="runtime" type="string" required>
+  Python 3.12
+</ParamField>
+
+<ParamField path="timeout" type="number">
+  900 seconds (15 minutes)
+</ParamField>
+
+<ParamField path="memory" type="number">
+  512 MB
+</ParamField>
+
+## Adobe PDF Services Configuration
+
+Both functions use Adobe PDF Services API for accessibility checking:
+
+```python
+client_config = ClientConfig(
+    connect_timeout=8000,
+    read_timeout=40000
+)
+
+client_id, client_secret = get_secret(file_basename)
+
+credentials = ServicePrincipalCredentials(
+    client_id=client_id,
+    client_secret=client_secret
+)
+
+pdf_services = PDFServices(credentials=credentials, client_config=client_config)
+```
+
+## Secrets Management
+
+Adobe API credentials are retrieved from AWS Secrets Manager:
+
+```python
+def get_secret(basefilename):
+    secret_name = "/myapp/client_credentials"
+    session = boto3.session.Session()
+    client = session.client(service_name='secretsmanager')
+    
+    try:
+        get_secret_value_response = client.get_secret_value(SecretId=secret_name)
+        secret = get_secret_value_response['SecretString']
+        secret_dict = json.loads(secret)
+        
+        client_id = secret_dict['client_credentials']['PDF_SERVICES_CLIENT_ID']
+        client_secret = secret_dict['client_credentials']['PDF_SERVICES_CLIENT_SECRET']
+        return client_id, client_secret
+
+    except ClientError as e:
+        print(f'Filename : {basefilename} | Error: {e}')
+        raise
+    except KeyError as e:
+        print(f"Filename : {basefilename} | KeyError: Missing key in the secret data: {e}")
+        raise
+    except Exception as e:
+        print(f"Filename : {basefilename} | Unexpected error: {e}")
+        raise
+```
+
+<ParamField path="secret_name" type="string" required>
+  `/myapp/client_credentials` - Contains Adobe PDF Services API credentials
+</ParamField>
+
+## Pre-Remediation Checker
+
+### Input Structure
+
+```json
+{
+  "s3_bucket": "pdf-processing-bucket",
+  "chunks": [
+    {
+      "s3_bucket": "pdf-processing-bucket",
+      "s3_key": "temp/document/document_chunk_1.pdf",
+      "chunk_key": "temp/document/document_chunk_1.pdf"
+    }
+  ]
+}
+```
+
+<ParamField path="s3_bucket" type="string" required>
+  The S3 bucket containing the original PDF
+</ParamField>
+
+<ParamField path="chunks" type="array" required>
+  Array of chunk metadata (only first chunk is used to extract base filename)
+</ParamField>
+
+### Processing Logic
+
+1. **Extract Filename from Chunks**:
+
+```python
+chunks = event.get('chunks', [])
+if chunks:
+    first_chunk = chunks[0]
+    s3_key = first_chunk.get('s3_key', None)
+    if s3_key:
+        file_basename = os.path.basename(s3_key)
+        file_basename = file_basename.split("_chunk_")[0] + os.path.splitext(file_basename)[1]
+```
+
+2. **Download Original PDF**:
+
+```python
+def download_file_from_s3(bucket_name, file_key, local_path):
+    s3 = boto3.client('s3')
+    s3.download_file(bucket_name, f"pdf/{file_key}", local_path)
+    print(f"Filename : {file_key} | Downloaded {file_key} from {bucket_name} to {local_path}")
+```
+
+3. **Run Accessibility Check**:
+
+```python
+pdf_file = open(local_path, 'rb')
+input_stream = pdf_file.read()
+pdf_file.close()
+
+# Upload to Adobe
+input_asset = pdf_services.upload(input_stream=input_stream, 
+                                  mime_type=PDFServicesMediaType.PDF)
+
+# Create accessibility checker job
+pdf_accessibility_checker_job = PDFAccessibilityCheckerJob(input_asset=input_asset)
+
+# Submit and wait for results
+location = pdf_services.submit(pdf_accessibility_checker_job)
+pdf_services_response = pdf_services.get_job_result(location, 
+                                                     PDFAccessibilityCheckerResult)
+
+# Get the report
+report_asset: CloudAsset = pdf_services_response.get_result().get_report()
+stream_report: StreamAsset = pdf_services.get_content(report_asset)
+```
+
+4. **Save Report to S3**:
+
+```python
+def create_json_output_file_path():
+    os.makedirs("/tmp/PDFAccessibilityChecker", exist_ok=True)
+    return f"/tmp/PDFAccessibilityChecker/result_before_remediation.json"
+
+def save_to_s3(bucket_name, file_key):
+    s3 = boto3.client('s3')
+    local_path = "/tmp/PDFAccessibilityChecker/result_before_remediation.json"
+    file_key_without_extension = os.path.splitext(file_key)[0]
+    bucket_save_path = f"temp/{file_key_without_extension}/accessability-report/{file_key_without_extension}_accessibility_report_before_remidiation.json"
+    
+    with open(local_path, "rb") as data:
+        s3.upload_fileobj(data, bucket_name, bucket_save_path)
+    
+    print(f"Filename {file_key} | Uploaded to {bucket_name} at {bucket_save_path}")
+    return bucket_save_path
+```
+
+### Output
+
+Returns the S3 path to the accessibility report:
+
+```python
+return f"Filename : {file_basename} | Saved accessibility report to {bucket_save_path}"
+```
+
+Report location: `temp/{filename}/accessability-report/{filename}_accessibility_report_before_remidiation.json`
+
+## Post-Remediation Checker
+
+### Input Structure
+
+```json
+{
+  "Payload": {
+    "body": {
+      "bucket": "pdf-processing-bucket",
+      "save_path": "result/COMPLIANT_document.pdf",
+      "title": "Accessible Document Title"
+    }
+  }
+}
+```
+
+<ParamField path="Payload.body.bucket" type="string" required>
+  The S3 bucket containing the remediated PDF
+</ParamField>
+
+<ParamField path="Payload.body.save_path" type="string" required>
+  The S3 key to the COMPLIANT PDF with updated title
+</ParamField>
+
+<ParamField path="Payload.body.title" type="string">
+  The AI-generated accessible title
+</ParamField>
+
+### Processing Logic
+
+1. **Extract Metadata**:
+
+```python
+payload = event.get('Payload', {})
+body = payload.get('body', {})
+s3_bucket = body.get('bucket')
+save_path = body.get('save_path')
+
+# Validate inputs
+if not s3_bucket or not save_path:
+    raise ValueError("Missing required inputs: 's3_bucket' or 'save_path'")
+```
+
+2. **Extract Filename**:
+
+```python
+import re
+pattern = r"COMPLIANT_[^/]*"
+match = re.search(pattern, save_path)
+if not match:
+    raise ValueError(f"Pattern '{pattern}' not found in save_path: {save_path}")
+
+file_basename = match.group(0)
+```
+
+3. **Download Remediated PDF**:
+
+```python
+def download_file_from_s3(bucket_name, file_key, save_path, local_path):
+    s3 = boto3.client('s3')
+    s3.download_file(bucket_name, save_path, local_path)
+    print(f"Filename : {file_key} | Downloaded from {save_path}")
+```
+
+4. **Run Accessibility Check** (same as pre-remediation):
+
+```python
+pdf_file = open(local_path, 'rb')
+input_stream = pdf_file.read()
+pdf_file.close()
+
+input_asset = pdf_services.upload(input_stream=input_stream, 
+                                  mime_type=PDFServicesMediaType.PDF)
+
+pdf_accessibility_checker_job = PDFAccessibilityCheckerJob(input_asset=input_asset)
+location = pdf_services.submit(pdf_accessibility_checker_job)
+pdf_services_response = pdf_services.get_job_result(location, 
+                                                     PDFAccessibilityCheckerResult)
+
+report_asset = pdf_services_response.get_result().get_report()
+stream_report = pdf_services.get_content(report_asset)
+```
+
+5. **Save Post-Remediation Report**:
+
+```python
+def create_json_output_file_path():
+    os.makedirs("/tmp/PDFAccessibilityChecker", exist_ok=True)
+    return f"/tmp/PDFAccessibilityChecker/result_after_remediation.json"
+
+def save_to_s3(bucket_name, file_key):
+    s3 = boto3.client('s3')
+    local_path = "/tmp/PDFAccessibilityChecker/result_after_remediation.json"
+    
+    file_key_without_extension = os.path.splitext(file_key)[0]
+    file_key_without_compliant = file_key_without_extension.replace("COMPLIANT_", "", 1)
+    
+    bucket_save_path = f"temp/{file_key_without_compliant}/accessability-report/{file_key_without_extension}_accessibility_report_after_remidiation.json"
+    
+    with open(local_path, "rb") as data:
+        s3.upload_fileobj(data, bucket_name, bucket_save_path)
+    
+    return bucket_save_path
+```
+
+### Output
+
+Returns the S3 path to the post-remediation report:
+
+```python
+return f"Filename : {file_basename} | Saved accessibility report to {bucket_save_path}"
+```
+
+Report location: `temp/{filename}/accessability-report/COMPLIANT_{filename}_accessibility_report_after_remidiation.json`
+
+## Accessibility Report Format
+
+The Adobe PDF Services API returns a comprehensive JSON report with:
+
+- **Document-level metadata**: Title, language, tags
+- **Accessibility issues**: Missing alt text, incorrect heading structure, color contrast
+- **Standards compliance**: PDF/UA, WCAG 2.1 AA validation
+- **Remediation suggestions**: Specific fixes for each issue
+
+Example report structure:
+```json
+{
+  "compliance": {
+    "pdfua": "compliant",
+    "wcag21aa": "compliant"
+  },
+  "issues": [
+    {
+      "type": "MissingAltText",
+      "page": 3,
+      "description": "Image lacks alternative text",
+      "severity": "high"
+    }
+  ],
+  "summary": {
+    "total_issues": 5,
+    "critical": 1,
+    "high": 2,
+    "medium": 2
+  }
+}
+```
+
+## Error Handling
+
+Both functions handle Adobe API exceptions:
+
+```python
+try:
+    # Adobe PDF Services operations
+    ...
+except (ServiceApiException, ServiceUsageException, SdkException) as e:
+    print(f'Filename : {file_basename} | Exception encountered: {e}')
+    return f"Filename : {file_basename} | Exception encountered: {e}"
+```
+
+<ParamField path="ServiceApiException" type="exception">
+  Adobe API service errors (authentication, rate limits)
+</ParamField>
+
+<ParamField path="ServiceUsageException" type="exception">
+  Usage limit exceeded or invalid operation
+</ParamField>
+
+<ParamField path="SdkException" type="exception">
+  SDK-level errors (network, parsing)
+</ParamField>
+
+## IAM Permissions Required
+
+- `s3:GetObject` - Download PDFs for checking
+- `s3:PutObject` - Upload accessibility reports
+- `secretsmanager:GetSecretValue` - Retrieve Adobe API credentials
+- `cloudwatch:PutMetricData` - Log metrics
+
+## Step Functions Integration
+
+### Pre-Remediation
+
+Runs in parallel with the remediation workflow:
+
+```python
+pre_remediation_accessibility_checker_task = tasks.LambdaInvoke(
+    self, 
+    "AuditPreRemediationAccessibility",
+    lambda_function=pre_remediation_accessibility_checker,
+    payload=sfn.TaskInput.from_json_path_at("$"),
+    output_path="$.Payload"
+)
+
+parallel_accessibility_workflow = sfn.Parallel(self, "ParallelAccessibilityWorkflow")
+parallel_accessibility_workflow.branch(remediation_chain)
+parallel_accessibility_workflow.branch(pre_remediation_accessibility_checker_task)
+```
+
+### Post-Remediation
+
+Runs after title generation:
+
+```python
+post_remediation_accessibility_checker_task = tasks.LambdaInvoke(
+    self, 
+    "AuditPostRemediationAccessibility",
+    lambda_function=post_remediation_accessibility_checker,
+    payload=sfn.TaskInput.from_json_path_at("$"),
+    output_path="$.Payload"
+)
+
+remediation_chain = pdf_chunks_map_state
+    .next(pdf_merger_lambda_task)
+    .next(title_generator_lambda_task)
+    .next(post_remediation_accessibility_checker_task)
+```
+
+## CloudWatch Metrics
+
+Both functions log detailed processing status:
+
+```python
+print(f"Filename : {file_basename} | File key in the function: {file_key}")
+print(f"Filename : {file_basename} | Downloaded {file_key} from {bucket_name}")
+print(f"Filename : {file_basename} | Saved accessibility report to {bucket_save_path}")
+```
+
+## Usage Example
+
+### Pre-Remediation Check
+
+**Input**:
+```json
+{
+  "s3_bucket": "pdf-processing-bucket",
+  "chunks": [
+    {"s3_key": "temp/manual/manual_chunk_1.pdf"}
+  ]
+}
+```
+
+**Processing**:
+1. Extracts base filename: `manual.pdf`
+2. Downloads from: `pdf/manual.pdf`
+3. Runs Adobe accessibility check
+4. Saves report to: `temp/manual/accessability-report/manual_accessibility_report_before_remidiation.json`
+
+**Output**:
+```
+Filename : manual.pdf | Saved accessibility report to temp/manual/accessability-report/manual_accessibility_report_before_remidiation.json
+```
+
+### Post-Remediation Check
+
+**Input**:
+```json
+{
+  "Payload": {
+    "body": {
+      "bucket": "pdf-processing-bucket",
+      "save_path": "result/COMPLIANT_manual.pdf",
+      "title": "User Manual for Product Setup and Configuration"
+    }
+  }
+}
+```
+
+**Processing**:
+1. Downloads from: `result/COMPLIANT_manual.pdf`
+2. Runs Adobe accessibility check
+3. Saves report to: `temp/manual/accessability-report/COMPLIANT_manual_accessibility_report_after_remidiation.json`
+
+**Output**:
+```
+Filename : COMPLIANT_manual.pdf | Saved accessibility report to temp/manual/accessability-report/COMPLIANT_manual_accessibility_report_after_remidiation.json
+```
+
+## Comparing Results
+
+You can compare before/after reports to measure remediation effectiveness:
+
+```python
+import boto3
+import json
+
+s3 = boto3.client('s3')
+
+# Download both reports
+before = json.loads(s3.get_object(
+    Bucket='bucket',
+    Key='temp/doc/accessability-report/doc_accessibility_report_before_remidiation.json'
+)['Body'].read())
+
+after = json.loads(s3.get_object(
+    Bucket='bucket',
+    Key='temp/doc/accessability-report/COMPLIANT_doc_accessibility_report_after_remidiation.json'
+)['Body'].read())
+
+# Compare issue counts
+print(f"Issues before: {before['summary']['total_issues']}")
+print(f"Issues after: {after['summary']['total_issues']}")
+print(f"Issues resolved: {before['summary']['total_issues'] - after['summary']['total_issues']}")
+```
+
+## Related Functions
+
+- [PDF Splitter Lambda](/api/pdf-splitter) - Triggers pre-remediation check
+- [PDF Merger Lambda](/api/pdf-merger) - Merges chunks for remediation
+- [Title Generator Lambda](/api/title-generator) - Runs before post-remediation check

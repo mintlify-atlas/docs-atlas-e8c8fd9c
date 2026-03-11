@@ -1,0 +1,316 @@
+---
+title: "Prerequisites"
+description: "Required setup and permissions before deploying PDF accessibility solutions"
+---
+
+Before deploying either PDF accessibility solution, ensure you have the necessary AWS account configuration, permissions, and service access.
+
+## Common Requirements
+
+These prerequisites apply to both PDF-to-PDF and PDF-to-HTML solutions:
+
+### AWS Account Setup
+
+<Steps>
+  <Step title="AWS Account Access">
+    You need an active AWS account with appropriate permissions to create and manage AWS resources.
+    
+    **Minimum Required Services:**
+    - Amazon S3 (file storage)
+    - AWS Lambda (serverless compute)
+    - AWS IAM (identity and access management)
+    - AWS CloudFormation (infrastructure deployment)
+    - Amazon CloudWatch (monitoring and logging)
+    - AWS Systems Manager (parameter storage)
+  </Step>
+
+  <Step title="AWS CloudShell Access">
+    AWS CloudShell provides a browser-based shell with AWS CLI pre-configured:
+    
+    1. Sign in to the AWS Management Console
+    2. In the top navigation bar, click the CloudShell icon (terminal symbol)
+    3. Wait for CloudShell to initialize (may take a few moments on first use)
+    
+    <Note>
+      CloudShell is available in most AWS regions and includes pre-installed tools like AWS CLI, Python, Node.js, and Git.
+    </Note>
+  </Step>
+
+  <Step title="IAM Permissions">
+    Your AWS user or role needs permissions to deploy infrastructure. See the [IAM Permissions Guide](/deployment/iam-permissions) for detailed requirements.
+    
+    **Quick permission check:**
+    ```bash
+    aws sts get-caller-identity
+    aws iam get-user
+    ```
+    
+    <Warning>
+      For production deployments, follow the principle of least privilege. The deployment script creates scoped IAM roles with minimal permissions.
+    </Warning>
+  </Step>
+</Steps>
+
+---
+
+## PDF-to-PDF Solution Requirements
+
+Additional prerequisites specific to the PDF-to-PDF remediation solution:
+
+### Adobe PDF Services API
+
+<Warning>
+  Adobe PDF Services API credentials are **required** for PDF-to-PDF remediation. The solution cannot function without these credentials.
+</Warning>
+
+You need an Adobe PDF Services API account with valid credentials:
+
+<Steps>
+  <Step title="Obtain Adobe Credentials">
+    Visit the [Adobe PDF Services API portal](https://acrobatservices.adobe.com/dc-integration-creation-app-cdn/main.html) to:
+    
+    - Create a free trial account (for testing)
+    - Or obtain enterprise-level credentials (for production)
+    
+    You'll receive:
+    - **Client ID** (PDF_SERVICES_CLIENT_ID)
+    - **Client Secret** (PDF_SERVICES_CLIENT_SECRET)
+  </Step>
+
+  <Step title="Credential Storage">
+    During deployment, the script will:
+    
+    1. Prompt you to enter your Adobe credentials
+    2. Securely store them in AWS Secrets Manager at `/myapp/client_credentials`
+    3. Configure Lambda functions and ECS tasks to access the credentials
+    
+    The credentials are never stored in plaintext or logged.
+  </Step>
+</Steps>
+
+### AWS Bedrock Access
+
+The PDF-to-PDF solution uses Amazon Bedrock for AI-powered content generation:
+
+<Steps>
+  <Step title="Enable Bedrock Model Access">
+    1. Navigate to the [Amazon Bedrock console](https://console.aws.amazon.com/bedrock/)
+    2. Click **Model access** in the left navigation
+    3. Request access to **Amazon Nova Pro** model
+    4. Wait for approval (usually instant for most accounts)
+  </Step>
+
+  <Step title="Verify Model Access">
+    ```bash
+    aws bedrock list-foundation-models --region us-east-1 --query 'modelSummaries[?contains(modelId, `nova-pro`)]'
+    ```
+    
+    You should see the Nova Pro model listed.
+  </Step>
+</Steps>
+
+### Additional AWS Services
+
+The PDF-to-PDF solution requires these additional services:
+
+- **Amazon ECS (Fargate)** - Containerized processing tasks
+- **Amazon ECR** - Container image registry
+- **AWS Step Functions** - Workflow orchestration
+- **Amazon EC2** - VPC and networking infrastructure
+- **AWS Secrets Manager** - Adobe credentials storage
+- **Amazon Comprehend** - Language detection
+
+---
+
+## PDF-to-HTML Solution Requirements
+
+Additional prerequisites specific to the PDF-to-HTML remediation solution:
+
+### AWS Bedrock Data Automation
+
+<Steps>
+  <Step title="Verify Bedrock Data Automation Access">
+    The PDF-to-HTML solution uses Bedrock Data Automation for PDF parsing:
+    
+    ```bash
+    aws bedrock-data-automation list-data-automation-projects --region us-east-1
+    ```
+    
+    If you get an access denied error, you may need to:
+    1. Contact your AWS account administrator
+    2. Request access to Bedrock Data Automation service
+    
+    <Note>
+      Most AWS accounts have Bedrock Data Automation access enabled by default.
+    </Note>
+  </Step>
+
+  <Step title="Enable Bedrock Models">
+    The PDF-to-HTML solution uses:
+    - **Amazon Nova Lite** - Fast content processing
+    - **Amazon Nova Pro** - Advanced accessibility remediation
+    
+    Enable these models in the [Bedrock console](https://console.aws.amazon.com/bedrock/).
+  </Step>
+</Steps>
+
+### Docker Support
+
+The PDF-to-HTML Lambda function uses a container image:
+
+- **CodeBuild** automatically handles Docker image building during deployment
+- No local Docker installation required when using CloudShell
+- The buildspec handles ECR authentication and image pushing
+
+---
+
+## Service Quotas and Limits
+
+Check and request increases for these service quotas if needed:
+
+### EC2 Service Quotas
+
+<Warning>
+  The PDF-to-PDF solution may fail if you've reached your Elastic IP limit.
+</Warning>
+
+1. Navigate to [EC2 Service Quotas](https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas)
+2. Search for "Elastic IPs"
+3. Check your current limit and usage
+4. Request an increase if needed (usually approved within minutes)
+
+### Lambda Service Quotas
+
+- **Concurrent executions**: Default 1,000 (usually sufficient)
+- **Function storage**: 75 GB total (PDF-to-HTML uses container images)
+- **Container image code size**: 10 GB max (solution uses ~2 GB)
+
+### S3 Service Quotas
+
+- **Buckets per account**: 100 (default)
+- **Objects per bucket**: Unlimited
+- **Object size**: 5 TB max
+
+<Note>
+  The solutions automatically handle large files by splitting them into smaller chunks for processing.
+</Note>
+
+---
+
+## Region Support
+
+### Recommended Regions
+
+Both solutions work in any AWS region that supports the required services:
+
+**Fully Tested Regions:**
+- `us-east-1` (US East - N. Virginia) ✅ Recommended
+- `us-west-2` (US West - Oregon)
+
+**Requirements per Region:**
+- Amazon Bedrock availability
+- Bedrock Data Automation (for PDF-to-HTML)
+- AWS Fargate (for PDF-to-PDF)
+
+<Warning>
+  Ensure all required services are available in your chosen region before deployment.
+</Warning>
+
+### Check Service Availability
+
+```bash
+# Check Bedrock availability
+aws bedrock list-foundation-models --region your-region
+
+# Check ECS Fargate availability
+aws ecs list-clusters --region your-region
+
+# Verify your current region
+echo $AWS_DEFAULT_REGION
+```
+
+---
+
+## Network Requirements
+
+### CloudShell Network Access
+
+- CloudShell requires internet access to download dependencies
+- No VPN or proxy configuration needed for standard deployments
+- All AWS service endpoints are accessible from CloudShell
+
+### VPC Configuration (PDF-to-PDF)
+
+The PDF-to-PDF solution automatically creates:
+- VPC with public and private subnets
+- NAT Gateway for private subnet internet access
+- Security groups for ECS tasks
+- VPC endpoints for AWS services (optional, for cost optimization)
+
+<Note>
+  The CDK stack handles all VPC configuration automatically. No manual networking setup required.
+</Note>
+
+---
+
+## Cost Considerations
+
+Before deployment, understand the cost implications:
+
+### PDF-to-PDF Solution Costs
+
+- **Adobe PDF Services API**: Pay-per-document (check Adobe pricing)
+- **AWS Fargate**: ~$0.04 per vCPU-hour + ~$0.004 per GB-hour
+- **NAT Gateway**: ~$0.045 per hour + data transfer
+- **Amazon Bedrock**: Pay per token (Nova Pro)
+- **S3 Storage**: $0.023 per GB-month (standard storage)
+
+### PDF-to-HTML Solution Costs
+
+- **AWS Lambda**: $0.20 per 1M requests + compute time
+- **Bedrock Data Automation**: Pay per page processed
+- **Amazon Bedrock**: Pay per token (Nova Lite/Pro)
+- **S3 Storage**: $0.023 per GB-month (standard storage)
+- **ECR Storage**: $0.10 per GB-month
+
+<Tip>
+  Both solutions support batch processing to optimize costs. Upload multiple files at once to process them efficiently.
+</Tip>
+
+---
+
+## Pre-Deployment Checklist
+
+Before running the deployment script, verify:
+
+<Accordion title="PDF-to-PDF Checklist">
+  - [ ] AWS account with appropriate permissions
+  - [ ] CloudShell access or AWS CLI configured
+  - [ ] Adobe PDF Services API credentials (Client ID and Secret)
+  - [ ] Bedrock access enabled (Nova Pro model)
+  - [ ] Elastic IP quota checked
+  - [ ] Region supports all required services
+</Accordion>
+
+<Accordion title="PDF-to-HTML Checklist">
+  - [ ] AWS account with appropriate permissions
+  - [ ] CloudShell access or AWS CLI configured
+  - [ ] Bedrock Data Automation access verified
+  - [ ] Bedrock model access enabled (Nova Lite and Pro)
+  - [ ] Region supports Bedrock Data Automation
+</Accordion>
+
+---
+
+## Next Steps
+
+Once all prerequisites are met:
+
+<CardGroup cols={2}>
+  <Card title="One-Click Deployment" icon="rocket" href="/deployment/one-click-deployment">
+    Deploy using the automated script (recommended)
+  </Card>
+  <Card title="Manual Deployment" icon="terminal" href="/deployment/manual-deployment">
+    Deploy using CDK commands (advanced)
+  </Card>
+</CardGroup>

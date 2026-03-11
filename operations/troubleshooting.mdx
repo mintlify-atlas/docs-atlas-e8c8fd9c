@@ -1,0 +1,482 @@
+---
+title: 'Troubleshooting'
+description: 'Diagnose and resolve common issues with PDF remediation workflows'
+---
+
+## Overview
+
+This guide covers common issues you may encounter when deploying or running the PDF Accessibility solution, along with step-by-step resolution procedures.
+
+## Deployment Issues
+
+### AWS Credentials Problems
+
+<Accordion title="AWS CLI not configured">
+
+**Symptoms:**
+- Deployment script fails with authentication errors
+- `Unable to locate credentials` error messages
+
+**Solution:**
+
+1. Verify AWS CLI is installed:
+```bash
+aws --version
+```
+
+2. Configure AWS credentials:
+```bash
+aws configure
+```
+
+Enter your:
+- AWS Access Key ID
+- AWS Secret Access Key  
+- Default region (e.g., `us-east-1`)
+- Default output format (e.g., `json`)
+
+3. Test credentials:
+```bash
+aws sts get-caller-identity
+```
+
+**CloudShell Users:**
+AWS CloudShell automatically configures credentials. If you encounter issues, restart your CloudShell session.
+
+</Accordion>
+
+<Accordion title="Insufficient IAM permissions">
+
+**Symptoms:**
+- Deployment fails with `AccessDenied` errors
+- Cannot create specific AWS resources
+
+**Solution:**
+
+Ensure your IAM user/role has permissions for:
+- S3 (bucket creation and management)
+- Lambda (function creation and deployment)
+- ECS (cluster, task definitions, Fargate)
+- ECR (repository creation and image push)
+- Step Functions (state machine creation)
+- IAM (role creation and policy attachment)
+- CloudWatch (log groups and dashboards)
+- Secrets Manager (for Adobe API credentials)
+- Bedrock (model invocation)
+
+Refer to the [IAM Permissions Guide](https://github.com/ASUCICREPO/PDF_Accessibility/blob/main/docs/IAM_PERMISSIONS.md) for detailed requirements.
+
+</Accordion>
+
+### Service Quota Errors
+
+<Accordion title="Elastic IP address limit exceeded">
+
+**Symptoms:**
+- CDK deployment fails during VPC creation
+- Error: `The maximum number of addresses has been reached`
+
+**Solution:**
+
+1. Check current Elastic IP quota:
+```bash
+aws service-quotas get-service-quota \
+  --service-code ec2 \
+  --quota-code L-0263D0A3
+```
+
+2. Request quota increase:
+   - Navigate to [EC2 Service Quotas](https://us-east-1.console.aws.amazon.com/servicequotas/home/services/ec2/quotas)
+   - Select "Elastic IPs"
+   - Click "Request quota increase"
+   - Typically approved within 24 hours
+
+3. **Temporary workaround**: Reduce NAT gateways to 0 in `app.py:61`:
+```python
+nat_gateways=0,  # Changed from 1
+```
+
+<Warning>
+Removing NAT gateways prevents ECS tasks from accessing the internet. Only use this for testing in private environments.
+</Warning>
+
+</Accordion>
+
+<Accordion title="Fargate capacity limits">
+
+**Symptoms:**
+- ECS tasks fail to launch
+- Error: `RESOURCE:FARGATE Capacity`
+
+**Solution:**
+
+1. Check current Fargate quotas:
+```bash
+aws service-quotas get-service-quota \
+  --service-code fargate \
+  --quota-code L-3032A538
+```
+
+2. Reduce concurrent execution in `app.py:235`:
+```python
+max_concurrency=10,  # Changed from 100
+```
+
+3. Request quota increase through AWS Support
+
+</Accordion>
+
+### CDK Deployment Errors
+
+<Accordion title="Docker push failure with 400 Bad Request">
+
+**Symptoms:**
+- `cdk deploy` fails with: `docker push to ecr unexpected status from PUT request 400 Bad Request`
+- ECR images show 0.0 size
+- ECS tasks fail with `CannotPullContainerError`
+
+**Root Cause:**
+This is a known CDK issue with Docker image asset uploads to ECR (tracked in [aws/aws-cdk#30258](https://github.com/aws/aws-cdk/issues/30258)).
+
+**Solution (Try in order):**
+
+1. **Update AWS CDK to latest version:**
+```bash
+npm install -g aws-cdk
+cdk --version
+```
+
+2. **Clean CDK cache and ECR:**
+```bash
+# Delete CDK output
+rm -rf cdk.out
+
+# Delete ECR images manually
+aws ecr list-images --repository-name repo-name --query 'imageIds[*]' --output json | \
+  jq -r '.[] | "\(.imageDigest)"' | \
+  xargs -I {} aws ecr batch-delete-image --repository-name repo-name --image-ids imageDigest={}
+```
+
+3. **Force rebuild by modifying source files:**
+```bash
+# Add a comment or whitespace to trigger rebuild
+echo "# rebuild" >> adobe-autotag-container/adobe_autotag_processor.py
+echo "// rebuild" >> alt-text-generator-container/alt_text_generator.js
+```
+
+4. **Redeploy:**
+```bash
+cdk deploy
+```
+
+5. **Verify image sizes in ECR:**
+   - Adobe Autotag: ~150 MB
+   - Alt Text Generator: ~500 MB
+
+<Note>
+This issue is fixed in newer CDK versions. Ensure you're using the latest release.
+</Note>
+
+</Accordion>
+
+## Runtime Issues
+
+### Adobe API Problems
+
+<Accordion title="Adobe API authentication failure">
+
+**Symptoms:**
+- ECS tasks fail with authentication errors
+- Logs show: `Invalid credentials` or `API key not found`
+
+**Solution:**
+
+1. Verify Adobe credentials in Secrets Manager:
+```bash
+aws secretsmanager get-secret-value \
+  --secret-id /myapp/adobe-api-credentials
+```
+
+2. Ensure credentials include:
+   - Client ID
+   - Client Secret
+   - Organization ID
+   - Account ID
+
+3. Test Adobe API access:
+```bash
+curl -X POST https://pdf-services.adobe.io/token \
+  -H "Content-Type: application/x-www-form-urlencoded" \
+  -d "client_id=YOUR_CLIENT_ID&client_secret=YOUR_CLIENT_SECRET"
+```
+
+4. Update credentials if expired:
+```bash
+aws secretsmanager update-secret \
+  --secret-id /myapp/adobe-api-credentials \
+  --secret-string '{"client_id":"...","client_secret":"..."}'
+```
+
+</Accordion>
+
+<Accordion title="Adobe API rate limiting">
+
+**Symptoms:**
+- Intermittent task failures
+- Logs show: `429 Too Many Requests`
+
+**Solution:**
+
+1. Check Adobe API usage limits in your Adobe account
+
+2. Reduce concurrent processing in `app.py:235`:
+```python
+max_concurrency=10,  # Reduce from 100
+```
+
+3. Implement exponential backoff in container code
+
+4. Contact Adobe to increase API limits
+
+</Accordion>
+
+### Bedrock Access Problems
+
+<Accordion title="Bedrock model access denied">
+
+**Symptoms:**
+- Lambda or ECS tasks fail with: `AccessDeniedException: User is not authorized to perform: bedrock:InvokeModel`
+- Alt text generation fails
+
+**Solution:**
+
+1. Enable Bedrock model access:
+   - Navigate to Amazon Bedrock console
+   - Select **Model access** from the left menu
+   - Click **Manage model access**
+   - Enable the models used by the solution:
+     - **Nova Pro** (for alt text and title generation)
+     - **Claude Sonnet** (alternative model)
+   - Click **Save changes**
+   - Wait 2-5 minutes for access to activate
+
+2. Verify IAM permissions in deployed roles:
+```bash
+aws iam get-role-policy \
+  --role-name PDFAccessibility-EcsTaskExecutionRole \
+  --policy-name BedrockInvokePolicy
+```
+
+3. Test Bedrock access:
+```bash
+aws bedrock-runtime invoke-model \
+  --model-id amazon.nova-pro-v1:0 \
+  --body '{"prompt":"test"}' \
+  output.json
+```
+
+</Accordion>
+
+### Processing Failures
+
+<Accordion title="PDF splitter Lambda timeout">
+
+**Symptoms:**
+- Large PDFs fail to process
+- Lambda logs show timeout after 900 seconds
+
+**Solution:**
+
+1. Check PDF size and page count:
+```python
+from pypdf import PdfReader
+reader = PdfReader("file.pdf")
+print(f"Pages: {len(reader.pages)}")
+```
+
+2. Increase chunk size in `lambda/pdf-splitter-lambda/main.py:146`:
+```python
+chunks = split_pdf_into_pages(pdf_file_content, pdf_file_key, s3, bucket_name, 500)
+# Increased from 200 to 500 pages per chunk
+```
+
+3. For very large documents, consider:
+   - Pre-splitting PDFs before upload
+   - Increasing Lambda memory allocation
+   - Processing in smaller batches
+
+</Accordion>
+
+<Accordion title="ECS task failures - CannotPullContainerError">
+
+**Symptoms:**
+- ECS tasks fail immediately after launch
+- Error: `CannotPullContainerError: ref pull has been retried`
+
+**Solution:**
+
+This is typically related to the Docker push issue during deployment. See the [CDK Deployment Errors](#cdk-deployment-errors) section above.
+
+Additional checks:
+
+1. Verify ECR images exist and have valid sizes:
+```bash
+aws ecr describe-images --repository-name adobe-autotag
+aws ecr describe-images --repository-name alt-text-generator
+```
+
+2. Check VPC endpoints are configured:
+```bash
+aws ec2 describe-vpc-endpoints --filters Name=vpc-id,Values=vpc-xxxxx
+```
+
+3. Verify ECS task execution role has ECR permissions
+
+</Accordion>
+
+<Accordion title="Step Functions workflow timeout">
+
+**Symptoms:**
+- Workflow times out after 150 minutes
+- Large PDFs don't complete processing
+
+**Solution:**
+
+1. Increase Step Functions timeout in `app.py:378`:
+```python
+timeout=Duration.minutes(300),  # Increased from 150
+```
+
+2. Optimize processing:
+   - Increase chunk size to reduce tasks
+   - Increase ECS task memory for faster processing
+   - Reduce max concurrency to prevent throttling
+
+3. Monitor execution progress:
+```bash
+aws stepfunctions describe-execution \
+  --execution-arn arn:aws:states:region:account:execution:name
+```
+
+</Accordion>
+
+## Reading CloudWatch Logs
+
+### Lambda Logs Structure
+
+Lambda logs include:
+- **START**: Request ID and initialization
+- **Logs**: Your print statements and errors  
+- **END**: Request completion
+- **REPORT**: Duration, memory, billed duration
+
+**Example:**
+```
+START RequestId: abc123 Version: $LATEST
+[INFO] File: document.pdf, Status: Processing
+[INFO] Uploaded document_chunk_1.pdf to S3
+END RequestId: abc123
+REPORT Duration: 1234.56 ms Billed Duration: 1300 ms Memory Size: 1024 MB Max Memory Used: 256 MB
+```
+
+### ECS Task Logs
+
+ECS logs show container output:
+```
+[timestamp] Starting Adobe Autotag processing
+[timestamp] Processing file: s3://bucket/temp/file_chunk_1.pdf
+[timestamp] Adobe API call successful
+[timestamp] Upload complete: s3://bucket/temp/file_chunk_1_tagged.pdf
+```
+
+### Step Functions Logs
+
+Step Functions logs capture:
+- State transitions
+- Input/output for each state
+- Errors and retries
+- Execution history
+
+**Query execution history:**
+```bash
+aws stepfunctions get-execution-history \
+  --execution-arn arn:aws:states:region:account:execution:name \
+  --max-results 100
+```
+
+## Recovery Procedures
+
+### Retry Failed Files
+
+1. **Identify failed files** from CloudWatch logs:
+```sql
+fields @timestamp, @message
+| parse @message "File: *, Status: Failed" as file, status
+| filter status = "Failed"
+```
+
+2. **Re-upload to S3** to trigger reprocessing:
+```bash
+aws s3 cp s3://bucket/pdf/failed-file.pdf s3://bucket/pdf/failed-file.pdf
+```
+
+### Clean Up Stuck Processing
+
+1. **Stop running Step Functions executions:**
+```bash
+aws stepfunctions stop-execution \
+  --execution-arn arn:aws:states:region:account:execution:name \
+  --error "ManualStop" \
+  --cause "Cleaning up stuck execution"
+```
+
+2. **Stop running ECS tasks:**
+```bash
+aws ecs stop-task \
+  --cluster PdfRemediationCluster \
+  --task task-arn \
+  --reason "Manual cleanup"
+```
+
+3. **Clean up temp files in S3:**
+```bash
+aws s3 rm s3://bucket/temp/ --recursive
+```
+
+### Rollback Deployment
+
+1. **Delete the CDK stack:**
+```bash
+cdk destroy
+```
+
+2. **Clean up retained resources manually:**
+   - S3 bucket (if retention policy set)
+   - CloudWatch log groups
+   - ECR repositories
+
+3. **Redeploy from previous version:**
+```bash
+git checkout <previous-commit>
+./deploy.sh
+```
+
+## Getting Additional Help
+
+<Card title="Contact Support" icon="envelope" href="mailto:ai-cic@amazon.com">
+  For issues not covered in this guide, contact ai-cic@amazon.com
+</Card>
+
+<Card title="GitHub Issues" icon="github" href="https://github.com/ASUCICREPO/PDF_Accessibility/issues">
+  Report bugs and request features
+</Card>
+
+<Card title="AWS Support" icon="aws" href="https://console.aws.amazon.com/support">
+  For AWS-specific service issues
+</Card>
+
+## Next Steps
+
+- [Monitoring](/operations/monitoring) - Set up comprehensive monitoring
+- [Cost Optimization](/operations/cost-optimization) - Reduce operational costs
+- [Configuration](/configuration/limits) - Adjust processing limits

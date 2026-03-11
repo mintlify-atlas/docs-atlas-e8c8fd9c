@@ -1,0 +1,337 @@
+---
+title: 'PDF-to-HTML Workflow'
+description: 'Convert PDFs to accessible HTML format with automated remediation and compliance reporting'
+---
+
+## Overview
+
+The PDF-to-HTML workflow converts PDF documents into accessible HTML format while preserving layout and visual appearance. The system uses AWS Bedrock Data Automation to parse PDFs, then applies comprehensive accessibility remediations to achieve WCAG 2.1 Level AA compliance.
+
+## S3 Bucket Structure
+
+Your deployment creates an S3 bucket with the naming pattern:
+
+```
+pdf2html-bucket-<account-id>-<region>
+```
+
+Example: `pdf2html-bucket-123456789012-us-east-1`
+
+The bucket contains three main folders:
+
+- **`uploads/`** - Upload your source PDF files here (created during deployment)
+- **`output/`** - Intermediate processing data (automatically created)
+- **`remediated/`** - Final remediated HTML packages (automatically created)
+
+## Processing Workflow
+
+<Steps>
+  <Step title="Upload Your PDF">
+    Navigate to your S3 bucket and upload PDF files to the `uploads/` folder:
+    
+    1. Open the AWS S3 Console
+    2. Find your bucket: `pdf2html-bucket-<account-id>-<region>`
+    3. Navigate to the `uploads/` folder
+    4. Click "Upload" and select your PDF files
+    
+    <Note>
+      The `uploads/` folder is created automatically during deployment. Only files uploaded to this specific folder will trigger processing.
+    </Note>
+    
+    <Tip>
+      You can upload multiple PDFs for batch processing. Each file triggers an independent Lambda execution.
+    </Tip>
+  </Step>
+
+  <Step title="Automatic Processing Begins">
+    The Lambda function immediately processes your PDF:
+    
+    1. **PDF Upload Detection** - S3 event triggers Lambda function
+    2. **Idempotency Check** - Verifies file hasn't already been processed
+    3. **Bedrock Data Automation** - Converts PDF to structured HTML
+    4. **Accessibility Audit** - Identifies WCAG 2.1 compliance issues
+    5. **Automated Remediation** - Applies accessibility fixes:
+       - Generates alt text for images
+       - Adds ARIA labels and landmarks
+       - Structures headings hierarchically
+       - Ensures proper table markup
+       - Fixes color contrast issues
+       - Creates accessible forms
+    6. **Generate Reports** - Creates detailed remediation and audit reports
+    7. **Package Results** - Creates ZIP files with all outputs
+    
+    <Note>
+      Processing runs entirely in Lambda (no ECS tasks required). A typical PDF processes in 2-5 minutes.
+    </Note>
+  </Step>
+
+  <Step title="Monitor Processing">
+    Track processing status via CloudWatch Logs:
+    
+    1. Open AWS CloudWatch Console
+    2. Navigate to "Log groups"
+    3. Select `/aws/lambda/Pdf2HtmlPipeline`
+    4. View real-time processing logs
+    
+    **Key Log Messages:**
+    ```
+    [INFO] Processing s3://pdf2html-bucket-.../uploads/document.pdf
+    [INFO] Downloaded PDF to /tmp/document.pdf
+    [INFO] Processing complete. Result: {...}
+    [INFO] Uploaded final zip file to s3://.../remediated/final_document.zip
+    ```
+    
+    <Tip>
+      If a file has already been processed, you'll see: "Output already exists, skipping processing". This prevents duplicate processing.
+    </Tip>
+  </Step>
+
+  <Step title="Download Results">
+    Once processing completes, download your remediated HTML package:
+    
+    1. Navigate to the `remediated/` folder in your S3 bucket
+    2. Download the ZIP file: `final_<your-filename>.zip`
+    
+    **File Naming Convention:**
+    ```
+    final_<original-filename-without-extension>.zip
+    ```
+    
+    Examples:
+    - Input: `my-document.pdf`
+    - Output: `final_my-document.zip`
+    
+    <Note>
+      The system automatically sanitizes filenames, replacing spaces and special characters with underscores.
+    </Note>
+  </Step>
+
+  <Step title="Extract and Use HTML">
+    Unzip the downloaded package to access your accessible HTML content:
+    
+    ```bash
+    unzip final_my-document.zip
+    ```
+    
+    Open `remediated_html/index.html` in a browser to view the accessible version.
+  </Step>
+</Steps>
+
+## Output Package Structure
+
+The `final_<filename>.zip` contains:
+
+```
+final_my-document.zip
+├── remediated_html/
+│   ├── index.html              # Main accessible HTML (use this!)
+│   ├── styles.css              # Styling
+│   └── images/
+│       ├── image_1.png         # Extracted images
+│       ├── image_2.png         # with generated alt text
+│       └── ...
+├── remediation_report.html     # Detailed accessibility report
+└── usage_data.json            # Processing metrics
+```
+
+### Key Files Explained
+
+#### `remediated_html/index.html`
+The fully remediated, WCAG 2.1 Level AA compliant HTML version of your PDF. This is the primary output you'll use.
+
+**Features:**
+- Semantic HTML structure
+- ARIA landmarks for navigation
+- Hierarchical heading structure
+- Alt text for all images
+- Accessible tables with proper markup
+- Sufficient color contrast
+- Keyboard navigation support
+- Screen reader compatible
+
+#### `images/` Folder
+All images extracted from the PDF with:
+- Original quality preserved
+- Unique naming: `image_1.png`, `image_2.png`, etc.
+- Embedded alt text in HTML
+- Context-aware descriptions
+
+#### `remediation_report.html`
+Comprehensive report showing:
+- Issues identified in audit
+- Remediations applied
+- Compliance status
+- Before/after comparisons
+- WCAG success criteria met
+
+#### `usage_data.json`
+Processing metrics including:
+- Bedrock API usage
+- Processing duration
+- Model invocations
+- Token counts
+
+## Intermediate Files
+
+During processing, the system creates intermediate files in the `output/` folder:
+
+```
+output/
+├── my-document.zip          # Complete processing output (all files)
+└── my-document.html         # Initial HTML conversion (pre-remediation)
+```
+
+<Note>
+  The `output/` folder contains both the initial conversion and complete processing data. For the final remediated version, always use files from the `remediated/` folder.
+</Note>
+
+## Automatic Cleanup
+
+The system automatically cleans up intermediate files to save storage costs:
+
+1. **Bedrock Processing Files** - Deleted from `bda-processing/` folder
+2. **Input Copies** - Removed from `bda-inputs/` folder
+3. **Temporary Outputs** - Old files removed from `output/` subfolders
+
+<Tip>
+  You can disable cleanup by setting the `CLEANUP_INTERMEDIATE_FILES` environment variable to `false` in the Lambda configuration.
+</Tip>
+
+## Processing Architecture
+
+### Lambda Function: `Pdf2HtmlPipeline`
+
+**Configuration:**
+- **Runtime**: Python (containerized)
+- **Memory**: 3008 MB
+- **Timeout**: 15 minutes
+- **Storage**: 10 GB ephemeral storage
+
+**Processing Steps:**
+
+1. **S3 Event Trigger** - Detects PDF upload to `uploads/` folder
+2. **Download PDF** - Retrieves file to `/tmp`
+3. **Bedrock Data Automation** - Converts PDF to structured data
+4. **PDF to HTML** - Generates initial HTML from parsed content
+5. **Accessibility Audit** - Runs comprehensive WCAG checks
+6. **Remediation** - Applies automated accessibility fixes:
+   - Image alt text generation (Bedrock Nova Pro)
+   - Document structure remediation
+   - Heading hierarchy fixes
+   - Landmark region addition
+   - Link text improvements
+   - Table accessibility
+   - Form label associations
+   - Color contrast adjustments
+7. **Generate Reports** - Creates remediation report
+8. **Package Outputs** - Creates ZIP files
+9. **Upload to S3** - Saves to `output/` and `remediated/` folders
+10. **Cleanup** - Removes intermediate files
+
+## Bulk Processing
+
+Process multiple PDFs simultaneously:
+
+1. **Upload Multiple Files** - Select and upload several PDFs to `uploads/`
+2. **Independent Execution** - Each file gets its own Lambda invocation
+3. **Concurrent Processing** - Multiple Lambdas run in parallel
+4. **Individual Outputs** - Each PDF generates its own `final_*.zip`
+
+<Tip>
+  The Lambda function has a default concurrency limit. For large batches (50+ files), consider uploading in groups or requesting a concurrency increase.
+</Tip>
+
+## Idempotency and Reprocessing
+
+The system prevents duplicate processing:
+
+- **First Upload**: PDF is processed completely
+- **Subsequent Uploads**: System detects existing output and skips processing
+- **Reprocessing**: Delete the output ZIP from `output/` folder, then re-upload the PDF
+
+**To Reprocess a PDF:**
+```bash
+# Delete existing output
+aws s3 rm s3://pdf2html-bucket-.../output/my-document.zip
+
+# Re-upload PDF
+aws s3 cp my-document.pdf s3://pdf2html-bucket-.../uploads/
+```
+
+## Monitoring and Logs
+
+### CloudWatch Logs
+View detailed processing logs at `/aws/lambda/Pdf2HtmlPipeline`:
+
+```
+[INFO] Received event: {...}
+[INFO] Processing s3://bucket/uploads/file.pdf
+[INFO] Downloaded PDF to /tmp/file.pdf
+[INFO] Processing complete
+[INFO] Uploaded complete zip file to s3://bucket/output/file.zip
+[INFO] Uploaded final zip file to s3://bucket/remediated/final_file.zip
+[INFO] Status: done
+```
+
+### CloudWatch Metrics
+Monitor Lambda performance:
+- **Invocations** - Number of PDFs processed
+- **Duration** - Processing time per file
+- **Errors** - Failed executions
+- **Concurrent Executions** - Parallel processing count
+
+## Troubleshooting
+
+### PDF Not Processing
+- Verify file is in `uploads/` folder (not root or other folders)
+- Check filename ends with `.pdf`
+- Ensure file isn't already processed (check `output/` folder)
+- Review Lambda logs for errors
+
+### Lambda Timeout
+- Very large PDFs (500+ pages) may exceed the 15-minute timeout
+- Consider pre-splitting large PDFs
+- Check `/tmp` storage isn't full
+
+### Missing Images in HTML
+- Verify images folder exists in the ZIP
+- Check Bedrock Data Automation extracted images correctly
+- Review Lambda logs for image processing errors
+
+### Output ZIP Missing
+- Check Lambda function completed successfully
+- Verify sufficient Lambda storage (10 GB ephemeral)
+- Look for errors in CloudWatch logs
+- Ensure S3 bucket permissions allow Lambda to write
+
+<Note>
+  If processing fails, the Lambda execution ID is logged. Use this to trace the exact error in CloudWatch Logs.
+</Note>
+
+## File Naming and Special Characters
+
+The system automatically sanitizes filenames:
+
+- **Spaces** → Underscores (`_`)
+- **Special Characters** (`#`, `%`, `&`, etc.) → Underscores
+- **Multiple Underscores** → Single underscore
+- **Leading/Trailing Underscores** → Removed
+
+**Examples:**
+- `My Document #1.pdf` → `final_My_Document_1.zip`
+- `Report (Final).pdf` → `final_Report_Final.zip`
+
+## Best Practices
+
+1. **File Naming** - Use alphanumeric names with hyphens or underscores
+2. **File Size** - PDFs up to 500 pages process reliably within timeout
+3. **Batch Uploads** - Upload 10-20 files at a time for optimal performance
+4. **Result Verification** - Always open and test the HTML in multiple browsers
+5. **Cleanup** - Delete old outputs from `output/` and `remediated/` folders periodically
+6. **Accessibility Testing** - Use tools like WAVE or axe DevTools to verify compliance
+
+## Next Steps
+
+- Learn about [PDF-to-PDF Workflow](/usage/pdf-to-pdf-workflow) to preserve PDF format
+- Understand [accessibility improvements](/usage/understanding-results) in detail
+- Review [configuration options](/configuration/architecture) for customization

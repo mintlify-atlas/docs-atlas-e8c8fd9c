@@ -1,0 +1,239 @@
+---
+title: 'PDF-to-PDF Workflow'
+description: 'Step-by-step guide for processing PDFs while maintaining the PDF format with accessibility enhancements'
+---
+
+## Overview
+
+The PDF-to-PDF workflow processes your PDF documents while preserving the original PDF format. The system automatically splits large PDFs into chunks, applies Adobe's auto-tagging for accessibility, generates alt text for images, adds table of contents, and merges the results into WCAG 2.1 Level AA compliant PDFs.
+
+## S3 Bucket Structure
+
+Your deployment creates an S3 bucket with the naming pattern:
+
+```
+pdfaccessibility-<unique-id>
+```
+
+The bucket contains three main folders:
+
+- **`pdf/`** - Upload your source PDF files here
+- **`temp/`** - Temporary processing files (automatically created during processing)
+- **`result/`** - Final remediated PDFs (automatically created after processing completes)
+
+## Processing Workflow
+
+<Steps>
+  <Step title="Upload Your PDF">
+    Navigate to your S3 bucket in the AWS Console and upload PDF files to the `pdf/` folder:
+    
+    1. Open the AWS S3 Console
+    2. Find your bucket starting with `pdfaccessibility-`
+    3. Click "Upload" and select your PDF files
+    4. Choose the `pdf/` folder as the destination
+    
+    <Note>
+      The `pdf/` folder is automatically created when you upload your first file. You don't need to create it manually.
+    </Note>
+    
+    <Tip>
+      You can upload multiple PDFs at once for batch processing. The system will process each file independently.
+    </Tip>
+  </Step>
+
+  <Step title="Automatic Processing Begins">
+    Once uploaded, the workflow automatically:
+    
+    1. **Splits PDF** - Large PDFs are split into 200-page chunks for efficient processing
+    2. **Checks Accessibility** - Pre-processing accessibility check using Adobe PDF Services
+    3. **Adobe Auto-Tagging** - Applies accessibility tags and structure
+    4. **Extract Content** - Extracts text, tables, figures, and images
+    5. **Generate Alt Text** - Creates AI-powered alt text for images using Amazon Bedrock
+    6. **Add Table of Contents** - Builds TOC based on document headings
+    7. **Inject Metadata** - Adds title, language, and accessibility metadata
+    8. **Final Accessibility Check** - Verifies WCAG compliance post-processing
+    9. **Merge Chunks** - Combines processed chunks back into a single PDF
+    
+    <Note>
+      During processing, you'll see a `temp/` folder appear with subdirectories containing intermediate files:
+      - `temp/<filename>/` - Contains PDF chunks
+      - `temp/<filename>/output_autotag/` - Adobe processing outputs
+      - `temp/<filename>/accessability-report/` - Pre and post-remediation reports
+    </Note>
+  </Step>
+
+  <Step title="Monitor Processing Status">
+    Track processing progress using CloudWatch:
+    
+    1. Open the AWS CloudWatch Console
+    2. Navigate to "Dashboards"
+    3. Select your PDF processing dashboard
+    4. View real-time metrics:
+       - Lambda function invocations
+       - ECS task executions
+       - Step Functions execution status
+       - Processing duration
+    
+    You can also monitor Step Functions directly:
+    
+    1. Open AWS Step Functions Console
+    2. Find executions for your state machine
+    3. View the visual workflow and execution status
+    
+    <Tip>
+      Processing time varies based on PDF size and complexity. A typical 100-page document takes 5-10 minutes.
+    </Tip>
+  </Step>
+
+  <Step title="Download Results">
+    Once processing completes, find your remediated PDF in the `result/` folder:
+    
+    1. Navigate to the `result/` folder in your S3 bucket
+    2. Download files with the `COMPLIANT_` prefix
+    
+    **File Naming Convention:**
+    ```
+    COMPLIANT_<original-filename>.pdf
+    ```
+    
+    For example:
+    - Input: `my-document.pdf`
+    - Output: `COMPLIANT_my-document.pdf`
+    
+    <Note>
+      The `COMPLIANT_` prefix indicates the PDF has been processed for accessibility compliance.
+    </Note>
+  </Step>
+</Steps>
+
+## Bulk Processing
+
+The workflow supports processing multiple PDFs simultaneously:
+
+1. **Upload Multiple Files** - Drop several PDFs into the `pdf/` folder at once
+2. **Independent Processing** - Each file triggers a separate workflow execution
+3. **Parallel Execution** - Multiple documents process concurrently
+4. **Individual Results** - Each PDF produces its own `COMPLIANT_` output file
+
+<Tip>
+  For large batch operations, consider uploading PDFs in groups of 5-10 to avoid hitting AWS service quotas.
+</Tip>
+
+## Folder Structure During Processing
+
+Here's what your S3 bucket looks like during active processing:
+
+```
+pdfaccessibility-xxxxx/
+├── pdf/
+│   └── my-document.pdf              # Your original upload
+├── temp/
+│   └── my-document/
+│       ├── my-document_chunk_1.pdf  # Split chunks
+│       ├── my-document_chunk_2.pdf
+│       ├── output_autotag/
+│       │   ├── COMPLIANT_my-document_chunk_1.pdf
+│       │   ├── images/              # Extracted images
+│       │   └── *_temp_images_data.db # Image context database
+│       └── accessability-report/
+│           ├── *_before_remediation.json
+│           └── *_after_remediation.json
+└── result/
+    └── COMPLIANT_my-document.pdf    # Final output
+```
+
+## Processing Stages Explained
+
+### Stage 1: PDF Splitting (Lambda)
+- **Function**: `pdf-splitter-lambda`
+- **Action**: Splits PDF into 200-page chunks
+- **Location**: `temp/<filename>/`
+- **Duration**: ~10-30 seconds per document
+
+### Stage 2: Accessibility Check (Lambda)
+- **Function**: `pre-remediation-accessibility-checker`
+- **Action**: Generates pre-processing compliance report
+- **Output**: JSON accessibility report
+- **Duration**: ~30-60 seconds
+
+### Stage 3: Adobe Auto-Tagging (ECS)
+- **Task**: `adobe-autotag-container`
+- **Actions**:
+  - Applies PDF tags for screen readers
+  - Extracts text, tables, and figures
+  - Creates structure tree
+  - Identifies images needing alt text
+- **Duration**: ~2-5 minutes per chunk
+
+### Stage 4: Alt Text Generation (ECS)
+- **Task**: `alt-text-generator-container`
+- **Action**: Generates descriptive alt text using Amazon Bedrock
+- **Model**: Nova Pro (multimodal)
+- **Duration**: ~1-3 minutes per chunk
+
+### Stage 5: Post-Processing Check (Lambda)
+- **Function**: `post-remediation-accessibility-checker`
+- **Action**: Verifies WCAG 2.1 Level AA compliance
+- **Output**: Final compliance report
+
+### Stage 6: Merge Results (Lambda)
+- **Function**: `pdf-merger-lambda`
+- **Action**: Combines all processed chunks
+- **Output**: Single `COMPLIANT_` PDF in `result/` folder
+
+## Monitoring and Logs
+
+### CloudWatch Logs
+View detailed processing logs:
+
+- **Lambda Logs**: `/aws/lambda/<function-name>`
+- **ECS Logs**: `/ecs/pdf-remediation/adobe-autotag` and `/ecs/pdf-remediation/alt-text-generator`
+
+### Step Functions Execution History
+Track workflow progress:
+
+1. Open Step Functions Console
+2. Select your state machine
+3. View execution details, including:
+   - Step-by-step execution status
+   - Duration per stage
+   - Input/output data for each step
+   - Error messages if failures occur
+
+## Troubleshooting
+
+### PDF Not Processing
+- Verify the file is uploaded to the `pdf/` folder (not root)
+- Ensure filename ends with `.pdf`
+- Check file isn't password-protected or corrupted
+- Review Lambda logs for error messages
+
+### Processing Stuck or Failed
+- Check Step Functions Console for failed steps
+- Review ECS task logs for container errors
+- Verify Adobe API credentials in Secrets Manager
+- Ensure sufficient service quotas (ECS tasks, Lambda concurrency)
+
+### Missing Results
+- Wait for processing to complete (check Step Functions status)
+- Verify the state machine execution succeeded
+- Check CloudWatch logs for merge errors
+- Look for error notifications in Step Functions
+
+<Note>
+  If processing fails, temporary files remain in the `temp/` folder. You can safely delete these and re-upload the original PDF to retry.
+</Note>
+
+## Best Practices
+
+1. **File Naming** - Use descriptive names without special characters
+2. **File Size** - PDFs up to 1000 pages are supported; larger files may need pre-splitting
+3. **Batch Uploads** - Upload in groups of 5-10 for optimal throughput
+4. **Cleanup** - Periodically clean up `temp/` folders to reduce storage costs
+5. **Monitoring** - Set up CloudWatch alarms for processing failures
+
+## Next Steps
+
+- Learn about [PDF-to-HTML Workflow](/usage/pdf-to-html-workflow) for HTML output
+- Understand [accessibility improvements](/usage/understanding-results) made to your PDFs
+- Review [Monitoring](/monitoring) options for production workloads

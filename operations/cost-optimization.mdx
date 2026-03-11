@@ -1,0 +1,588 @@
+---
+title: 'Cost Optimization'
+description: 'Optimize AWS costs for PDF remediation workloads'
+---
+
+## Overview
+
+The PDF Accessibility solution uses several AWS services that incur costs. This guide helps you understand the cost structure and provides strategies to optimize your spending.
+
+## Cost Components
+
+### AWS Service Costs
+
+The primary cost drivers are:
+
+| Service | Cost Factor | Typical Usage |
+|---------|-------------|---------------|
+| **ECS Fargate** | vCPU and memory per second | 0.25 vCPU, 1 GB RAM per task |
+| **Lambda** | Invocations and duration | Per PDF split, merge, and check |
+| **S3** | Storage and requests | Temporary chunks and final results |
+| **Step Functions** | State transitions | ~4 transitions per chunk + overhead |
+| **NAT Gateway** | Data processing and hourly | Internet access for ECS tasks |
+| **Bedrock** | Model invocations | Per alt text and title generation |
+| **Adobe API** | API calls | Per page processed (external cost) |
+| **CloudWatch** | Logs and metrics | Log ingestion and storage |
+
+<Tip>
+Use [AWS Cost Explorer](https://aws.amazon.com/aws-cost-management/aws-cost-explorer/) to track costs by service and identify optimization opportunities.
+</Tip>
+
+## ECS Fargate vs Lambda Cost Considerations
+
+### When Fargate is Cost-Effective
+
+The solution uses ECS Fargate for Adobe Autotag and Alt Text Generation because:
+
+1. **Long-running tasks**: Processing can take several minutes per chunk
+2. **Container size**: Docker images are 150-500 MB (exceeds Lambda limits)
+3. **Memory requirements**: Requires consistent 1 GB RAM
+4. **API integration**: Adobe API requires persistent connections
+
+**Fargate Pricing (us-east-1):**
+- vCPU: $0.04048 per vCPU per hour
+- Memory: $0.004445 per GB per hour
+- **Per task cost** (0.25 vCPU, 1 GB, 5 min): ~$0.0042
+
+### When Lambda is More Economical
+
+The solution uses Lambda for:
+
+1. **PDF Splitter**: Quick operation (< 30 seconds per PDF)
+2. **PDF Merger**: Java-based, fast chunk assembly  
+3. **Title Generator**: Short Bedrock API calls
+4. **Accessibility Checkers**: Fast Adobe API validation calls
+
+**Lambda Pricing:**
+- Free tier: 1M requests, 400,000 GB-seconds per month
+- After free tier: $0.20 per 1M requests + $0.0000166667 per GB-second
+
+<Tip>
+For processing fewer than 1,000 PDFs per month, Lambda costs are minimal due to the free tier.
+</Tip>
+
+## S3 Storage Optimization
+
+### Current Storage Pattern
+
+The solution creates three S3 prefixes:
+
+- **`pdf/`**: Input PDFs (user-managed)
+- **`temp/`**: Intermediate chunk files (automatically created)
+- **`result/`**: Final remediated PDFs (long-term storage)
+
+### Lifecycle Policies for Temp Files
+
+Implement S3 lifecycle rules to automatically delete temporary files:
+
+```bash
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket pdfaccessibility-bucket-name \
+  --lifecycle-configuration file://lifecycle.json
+```
+
+**lifecycle.json:**
+```json
+{
+  "Rules": [
+    {
+      "Id": "Delete temp files after 7 days",
+      "Prefix": "temp/",
+      "Status": "Enabled",
+      "Expiration": {
+        "Days": 7
+      }
+    },
+    {
+      "Id": "Delete input PDFs after 30 days",
+      "Prefix": "pdf/",
+      "Status": "Enabled",
+      "Expiration": {
+        "Days": 30
+      }
+    }
+  ]
+}
+```
+
+<Warning>
+Ensure you've downloaded results before expiration. Consider backing up to S3 Glacier for long-term archival at lower cost.
+</Warning>
+
+### Intelligent Tiering
+
+For result files, use S3 Intelligent-Tiering:
+
+```bash
+aws s3api put-bucket-lifecycle-configuration \
+  --bucket pdfaccessibility-bucket-name \
+  --lifecycle-configuration file://intelligent-tier.json
+```
+
+**intelligent-tier.json:**
+```json
+{
+  "Rules": [
+    {
+      "Id": "Move results to Intelligent-Tiering",
+      "Prefix": "result/",
+      "Status": "Enabled",
+      "Transitions": [
+        {
+          "Days": 0,
+          "StorageClass": "INTELLIGENT_TIERING"
+        }
+      ]
+    }
+  ]
+}
+```
+
+**Savings:**
+- Standard: $0.023 per GB per month
+- Intelligent-Tiering (infrequent): $0.0125 per GB per month
+- **Up to 46% savings** for infrequently accessed results
+
+## CloudWatch Log Retention
+
+### Current Log Retention
+
+All log groups are configured with **1 month retention** in `app.py`:
+
+```python
+retention=logs.RetentionDays.ONE_MONTH
+```
+
+### Optimize Log Retention
+
+Reduce costs by adjusting retention based on log importance:
+
+```python
+# Critical logs - keep longer
+adobe_autotag_log_group = logs.LogGroup(self, "AdobeAutotagContainerLogs",
+    log_group_name="/ecs/pdf-remediation/adobe-autotag",
+    retention=logs.RetentionDays.THREE_MONTHS,  # Changed
+)
+
+# Debug logs - keep shorter
+pdf_splitter_log_group = logs.LogGroup(self, "PdfSplitterLogs",
+    log_group_name="/aws/lambda/pdf-splitter",
+    retention=logs.RetentionDays.ONE_WEEK,  # Changed
+)
+```
+
+**Cost Impact:**
+- Standard log ingestion: $0.50 per GB
+- Storage: $0.03 per GB per month
+- Reducing retention from 1 month to 1 week saves 75% on storage
+
+<Tip>
+Export important logs to S3 for long-term retention at lower cost:
+```bash
+aws logs create-export-task \
+  --log-group-name /ecs/pdf-remediation/adobe-autotag \
+  --from 1640000000000 \
+  --to 1642000000000 \
+  --destination s3://backup-bucket/logs/
+```
+</Tip>
+
+## Processing Batch Size Optimization
+
+### Chunk Size Configuration
+
+The PDF splitter divides documents into chunks (default: 200 pages per chunk):
+
+```python
+# In lambda/pdf-splitter-lambda/main.py:146
+chunks = split_pdf_into_pages(pdf_file_content, pdf_file_key, s3, bucket_name, 200)
+```
+
+### Impact of Chunk Size
+
+| Chunk Size | ECS Tasks | S3 Operations | Step Functions | Total Cost |
+|------------|-----------|---------------|----------------|------------|
+| 50 pages | 20 tasks | High | High | Higher |
+| 200 pages | 5 tasks | Medium | Medium | **Optimal** |
+| 500 pages | 2 tasks | Low | Low | Lower* |
+
+\* *May increase task duration and timeout risk*
+
+### Recommendations by Document Size
+
+<Accordion title="Small documents (< 50 pages)">
+
+**Configuration:**
+```python
+pages_per_chunk = 50  # Process entire document in one task
+```
+
+**Benefits:**
+- Minimal overhead
+- Faster processing
+- Lower Step Functions costs
+
+</Accordion>
+
+<Accordion title="Medium documents (50-500 pages)">
+
+**Configuration:**
+```python
+pages_per_chunk = 200  # Default, balanced approach
+```
+
+**Benefits:**
+- Good parallelization
+- Reasonable task duration
+- Optimal cost-performance ratio
+
+</Accordion>
+
+<Accordion title="Large documents (> 500 pages)">
+
+**Configuration:**
+```python
+pages_per_chunk = 500  # Larger chunks, fewer tasks
+```
+
+**Benefits:**
+- Fewer ECS task launches
+- Lower Step Functions overhead
+- Reduced S3 operations
+
+**Tradeoffs:**
+- Longer task duration
+- Higher timeout risk
+- Less parallelization
+
+</Accordion>
+
+## NAT Gateway Cost Reduction
+
+### Understanding NAT Gateway Costs
+
+NAT Gateway is required for ECS tasks to access Adobe API and Bedrock:
+
+- **Hourly charge**: $0.045 per hour (~$32.40/month)
+- **Data processing**: $0.045 per GB processed
+
+**For 1,000 PDFs per month:**
+- Base cost: $32.40
+- Data transfer (est. 10 GB): $0.45
+- **Total NAT cost**: ~$33/month
+
+### Optimization Strategies
+
+<Accordion title="Use VPC Endpoints (Already Implemented)">
+
+The solution includes VPC endpoints for:
+- **ECR API**: Pulls container images without NAT
+- **ECR Docker**: Downloads Docker layers without NAT
+- **S3 Gateway**: S3 access without NAT
+
+**Savings**: ~$0.01 per GB of data transfer to these services
+
+To verify endpoints are configured:
+```bash
+aws ec2 describe-vpc-endpoints \
+  --filters Name=vpc-id,Values=vpc-xxxxx \
+  --query 'VpcEndpoints[*].ServiceName'
+```
+
+</Accordion>
+
+<Accordion title="Add Bedrock VPC Endpoint">
+
+Reduce NAT usage for Bedrock API calls:
+
+```python
+# Add to app.py after line 85
+pdf_processing_vpc.add_interface_endpoint("BedrockEndpoint",
+    service=ec2.InterfaceVpcEndpointAwsService.BEDROCK_RUNTIME
+)
+```
+
+**Savings**: $0.01 per GB of Bedrock traffic
+
+</Accordion>
+
+<Accordion title="Process in Batches (Reduce NAT Hours)">
+
+Instead of continuous processing:
+
+1. Batch PDF uploads
+2. Process in scheduled windows
+3. Deploy/destroy stack as needed
+
+**Example batch schedule:**
+```bash
+# Deploy for processing window
+aws cloudformation deploy --template-file template.yaml
+
+# Process PDFs (4 hours)
+aws s3 sync ./pdfs s3://bucket/pdf/
+
+# Destroy after processing
+aws cloudformation delete-stack --stack-name PDFAccessibility
+```
+
+**Savings**: Only pay for NAT during processing hours
+
+</Accordion>
+
+### Multi-AZ vs Single-AZ NAT
+
+Current configuration uses 1 NAT Gateway:
+
+```python
+# In app.py:61
+nat_gateways=1,
+```
+
+**Single NAT Gateway:**
+- Cost: ~$33/month
+- Availability: Lower (single point of failure)
+- Use case: Development and testing
+
+**Multi-AZ (2 NAT Gateways):**
+- Cost: ~$66/month
+- Availability: Higher (redundancy across AZs)
+- Use case: Production workloads
+
+<Tip>
+For development environments, consider `nat_gateways=0` and use public subnets with appropriate security groups. This eliminates NAT costs but exposes tasks to the internet.
+</Tip>
+
+## Bedrock Cost Management
+
+### Model Pricing
+
+Bedrock models used in the solution:
+
+| Model | Use Case | Input Cost | Output Cost |
+|-------|----------|------------|-------------|
+| Nova Pro | Alt text, titles | $0.80 per 1M tokens | $3.20 per 1M tokens |
+| Claude Sonnet | Alternative model | $3.00 per 1M tokens | $15.00 per 1M tokens |
+
+### Optimization Strategies
+
+<Accordion title="Use efficient prompts">
+
+Reduce token usage by:
+- Using concise prompts
+- Avoiding unnecessary context
+- Limiting output length
+
+**Example optimization:**
+```python
+# Before (verbose)
+prompt = "Please analyze this image and generate a comprehensive, detailed description that will serve as alternative text for accessibility purposes, ensuring WCAG 2.1 Level AA compliance."
+
+# After (concise)
+prompt = "Generate WCAG 2.1 Level AA compliant alt text for this image."
+```
+
+**Savings**: ~40% reduction in input tokens
+
+</Accordion>
+
+<Accordion title="Batch API calls">
+
+Process multiple images in a single Bedrock invocation when possible:
+
+```python
+# Instead of one call per image
+for image in images:
+    response = bedrock.invoke_model(prompt=f"Alt text for {image}")
+
+# Batch multiple images
+images_batch = images[:10]  # Process 10 at a time
+response = bedrock.invoke_model(prompt=f"Generate alt text for these images: {images_batch}")
+```
+
+**Savings**: Reduced overhead tokens per request
+
+</Accordion>
+
+<Accordion title="Cache common responses">
+
+For documents with similar images:
+
+```python
+import hashlib
+
+def get_alt_text(image_bytes):
+    # Check if we've seen this image before
+    image_hash = hashlib.md5(image_bytes).hexdigest()
+    
+    if image_hash in cache:
+        return cache[image_hash]
+    
+    # Call Bedrock only for new images
+    alt_text = bedrock.invoke_model(...)
+    cache[image_hash] = alt_text
+    return alt_text
+```
+
+**Savings**: Avoid redundant API calls for duplicate images
+
+</Accordion>
+
+## Step Functions Cost Optimization
+
+### State Transition Pricing
+
+- **Cost**: $0.025 per 1,000 state transitions
+- **Per document**: ~(4 × number of chunks) + 10 overhead transitions
+
+**Example cost calculation:**
+```
+1,000-page PDF → 5 chunks (200 pages each)
+Transitions = (4 × 5) + 10 = 30 transitions
+Cost per PDF = 30 × $0.025 / 1000 = $0.00075
+```
+
+### Optimization
+
+Increase chunk size to reduce transitions:
+
+```python
+# 200 pages/chunk: 5 chunks = 30 transitions
+pages_per_chunk = 200
+
+# 500 pages/chunk: 2 chunks = 18 transitions  
+pages_per_chunk = 500  # 40% fewer transitions
+```
+
+## Cost Monitoring and Budgets
+
+### Set Up AWS Budgets
+
+Create budget alerts to track spending:
+
+```bash
+aws budgets create-budget \
+  --account-id 123456789012 \
+  --budget file://budget.json \
+  --notifications-with-subscribers file://notifications.json
+```
+
+**budget.json:**
+```json
+{
+  "BudgetName": "PDF-Accessibility-Monthly",
+  "BudgetLimit": {
+    "Amount": "100",
+    "Unit": "USD"
+  },
+  "TimeUnit": "MONTHLY",
+  "BudgetType": "COST",
+  "CostFilters": {
+    "TagKeyValue": ["project:pdf-accessibility"]
+  }
+}
+```
+
+### Tag Resources for Cost Tracking
+
+Add tags to CDK resources:
+
+```python
+# In app.py
+cdk.Tags.of(self).add("Project", "PDF-Accessibility")
+cdk.Tags.of(self).add("Environment", "Production")
+cdk.Tags.of(self).add("CostCenter", "IT")
+```
+
+Track costs by tag:
+```bash
+aws ce get-cost-and-usage \
+  --time-period Start=2025-03-01,End=2025-03-31 \
+  --granularity MONTHLY \
+  --metrics BlendedCost \
+  --group-by Type=TAG,Key=Project
+```
+
+### Cost Explorer Recommendations
+
+Use Cost Explorer to:
+1. Identify highest-cost services
+2. Track cost trends over time
+3. Compare costs across environments
+4. Analyze cost by operation (e.g., per PDF processed)
+
+## Example Cost Analysis
+
+### Scenario: Processing 1,000 PDFs per Month
+
+**Assumptions:**
+- Average PDF size: 500 pages
+- Chunk size: 200 pages (2.5 chunks per PDF)
+- Processing time: 5 minutes per chunk
+
+**Estimated Monthly Costs:**
+
+| Service | Calculation | Cost |
+|---------|-------------|------|
+| **ECS Fargate** | 1,000 PDFs × 2.5 tasks × $0.0042 | $10.50 |
+| **Lambda** | Within free tier | $0.00 |
+| **Step Functions** | 1,000 × 20 transitions × $0.025/1000 | $0.50 |
+| **S3 Storage** | 50 GB × $0.023 | $1.15 |
+| **S3 Requests** | 10,000 PUTs × $0.005/1000 | $0.05 |
+| **NAT Gateway** | $32.40 + 10 GB × $0.045 | $32.85 |
+| **Bedrock** | 1M tokens × $0.80 (input) + 200K × $3.20 (output) | $1.44 |
+| **CloudWatch** | 5 GB logs × $0.50 | $2.50 |
+| **Adobe API** | External cost (varies) | Varies |
+| **Total AWS Cost** | | **~$49/month** |
+
+**Cost per PDF**: ~$0.05 (excluding Adobe API)
+
+<Tip>
+With optimizations (larger chunks, shorter log retention, S3 lifecycle rules), you can reduce costs by 30-40% to approximately $30-35 per month.
+</Tip>
+
+## Reserved Capacity and Savings Plans
+
+### Compute Savings Plans
+
+For consistent workloads, consider Compute Savings Plans:
+
+- **1-year commitment**: Up to 17% savings
+- **3-year commitment**: Up to 54% savings
+- Applies to: Fargate, Lambda, EC2
+
+**When to consider:**
+- Processing > 5,000 PDFs per month
+- Steady baseline workload
+- Long-term deployment (1+ years)
+
+### ECS Fargate Spot
+
+<Warning>
+Currently, CDK doesn't easily support Fargate Spot for Step Functions ECS tasks. This may change in future CDK versions.
+</Warning>
+
+Fargate Spot offers up to 70% savings but:
+- Tasks can be interrupted
+- Not suitable for time-sensitive processing
+- Best for batch workloads with retry logic
+
+## Next Steps
+
+- [Monitoring](/operations/monitoring) - Track resource utilization
+- [Configuration](/configuration/limits) - Adjust processing parameters
+- [Architecture](/architecture) - Understand service interactions
+
+## Additional Resources
+
+<Card title="AWS Cost Optimization" icon="aws" href="https://aws.amazon.com/pricing/cost-optimization/">
+  AWS cost optimization best practices
+</Card>
+
+<Card title="AWS Pricing Calculator" icon="calculator" href="https://calculator.aws/">
+  Estimate costs for your workload
+</Card>
+
+<Card title="AWS Well-Architected Framework" icon="book" href="https://aws.amazon.com/architecture/well-architected/">
+  Cost optimization pillar guidance
+</Card>

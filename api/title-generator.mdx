@@ -1,0 +1,377 @@
+---
+title: 'Title Generator Lambda'
+description: 'Generates accessible, AI-powered titles for PDFs using Amazon Bedrock'
+---
+
+## Overview
+
+The Title Generator Lambda function uses Amazon Bedrock (Nova Pro model) to analyze PDF content and generate WCAG 2.1 AA-compliant titles. It extracts text from the first 2-3 pages of the merged PDF, sends it to Bedrock for AI analysis, and updates the PDF metadata with an accessible title.
+
+## Function Details
+
+<ParamField path="handler" type="string" required>
+  `title_generator.lambda_handler`
+</ParamField>
+
+<ParamField path="runtime" type="string" required>
+  Python 3.12
+</ParamField>
+
+<ParamField path="timeout" type="number">
+  900 seconds (15 minutes)
+</ParamField>
+
+<ParamField path="memory" type="number">
+  1024 MB
+</ParamField>
+
+<ParamField path="architecture" type="string">
+  ARM64 or X86_64 (detected automatically based on host machine)
+</ParamField>
+
+## Input Structure
+
+The function receives output from the PDF Merger Lambda:
+
+```json
+{
+  "Payload": "PDFs merged successfully.\nBucket: pdf-processing-bucket\nMerged File Key: temp/document/merged_document.pdf\nMerged File Name: document.pdf"
+}
+```
+
+<ParamField path="Payload" type="string" required>
+  A formatted string containing:
+  - Bucket name
+  - Merged file S3 key
+  - Merged file name
+</ParamField>
+
+## Processing Logic
+
+### 1. Parse Input Payload
+
+The function extracts metadata from the formatted string:
+
+```python
+def parse_payload(payload):
+    lines = payload.strip().split('\n')
+    data = {}
+    for line in lines:
+        if line.startswith("Bucket:"):
+            data['bucket'] = line.split("Bucket:")[1].strip()
+        elif line.startswith("Merged File Key:"):
+            data['merged_file_key'] = line.split("Merged File Key:")[1].strip()
+        elif line.startswith("Merged File Name:"):
+            data['merged_file_name'] = line.split("Merged File Name:")[1].strip()
+        else:
+            data['status'] = line.strip()
+    return data
+```
+
+### 2. Download and Open PDF
+
+The function downloads the merged PDF from S3 using exponential backoff:
+
+```python
+def download_file_from_s3(bucket_name, file_key, local_path, filename):
+    s3 = boto3.client('s3')
+    exponential_backoff_retry(
+        s3.download_file,
+        bucket_name,
+        file_key,
+        local_path,
+        retries=3,
+        base_delay=1,
+        backoff_factor=2
+    )
+    print(f"Filename: {filename}| Downloaded {file_key} from {bucket_name} to {local_path}")
+```
+
+### 3. Extract Text from PDF
+
+The function uses PyMuPDF (fitz) to extract text from the first 2-3 pages:
+
+```python
+def extract_text_from_pdf(pdf_document):
+    """
+    Extracts text from the first page of a PDF. If the text on the first page
+    has fewer than 50 words, extracts text from the second and third pages as well.
+    """
+    try:
+        # Extract text from the first page
+        first_page_text = pdf_document[0].get_text() if len(pdf_document) > 0 else ""
+        word_count_first_page = len(first_page_text.split())
+        
+        if word_count_first_page >= 50 or len(pdf_document) == 1:
+            return first_page_text
+        else:
+            # Extract text from the second and third pages if needed
+            second_page_text = pdf_document[1].get_text() if len(pdf_document) > 1 else ""
+            third_page_text = pdf_document[2].get_text() if len(pdf_document) > 2 else ""
+            return "\n\n".join([first_page_text, second_page_text, third_page_text]).strip()
+    except Exception as e:
+        return f"An error occurred: {e}"
+```
+
+### 4. Generate Title with Bedrock
+
+The function uses Amazon Bedrock's Nova Pro model to generate an accessible title:
+
+```python
+def generate_title(extracted_text, current_title):
+    session = boto3.Session()
+    region = session.region_name
+    
+    sts_client = session.client('sts')
+    account_id = exponential_backoff_retry(
+        sts_client.get_caller_identity,
+        retries=3,
+        base_delay=1,
+        backoff_factor=2
+    )['Account']
+
+    model_name = 'us.amazon.nova-pro-v1:0'
+    model_id = f'arn:aws:bedrock:{region}:{account_id}:inference-profile/{model_name}'
+    
+    client = boto3.client('bedrock-runtime', region_name=region)
+    prompt = f'''
+    Using the following content extracted from the first two to three pages of a PDF document, 
+    generate a clear, concise, and descriptive title for the file. The title should accurately 
+    summarize the primary focus of the document, be free of unnecessary jargon, and comply with 
+    WCAG 2.1 AA accessibility guidelines by being understandable and distinguishable.
+
+    Check the current title against the context of the extracted text. If you think the current 
+    title is good enough based on the context, reply with the current title and nothing else. 
+    Otherwise, generate a new title based on the provided context.
+
+    Current File Title: {current_title}
+    Context for title generation: {extracted_text}
+    Output only the title as the response and please do not reply with anything else except 
+    the generated title.
+    '''
+
+    request_payload = {
+        'modelId': model_id,
+        'messages': [
+            {
+                'role': 'user',
+                'content': [{'text': prompt}]
+            }
+        ]
+    }
+
+    response = exponential_backoff_retry(
+        client.converse,
+        modelId=model_id,
+        messages=request_payload['messages'],
+        retries=3,
+        base_delay=1,
+        backoff_factor=2
+    )
+
+    generated_title = response['output']['message']['content'][0]['text']
+    return generated_title.strip('"')
+```
+
+<ParamField path="extracted_text" type="string" required>
+  Text content extracted from the PDF's first 2-3 pages
+</ParamField>
+
+<ParamField path="current_title" type="string" required>
+  The current filename to compare against
+</ParamField>
+
+### 5. Set PDF Metadata
+
+The function updates both XMP and standard PDF metadata:
+
+```python
+def set_custom_metadata(pdf_document, filename, title):
+    # Set XML metadata for the PDF
+    xmp_metadata = f'''<?xml version="1.0" encoding="UTF-8"?>
+    <rdf:RDF xmlns:rdf="http://www.w3.org/1999/02/22-rdf-syntax-ns#"
+            xmlns:dc="http://purl.org/dc/elements/1.1/"
+            xmlns:xmp="http://ns.adobe.com/xap/1.0/"
+            xmlns:pdfuaid="http://www.aiim.org/pdfua/ns/id/">
+        <rdf:Description rdf:about=""
+            xmlns:dc="http://purl.org/dc/elements/1.1/">
+            <dc:title>{title}</dc:title>
+            <pdfuaid:part>1</pdfuaid:part>
+            <pdfuaid:conformance>B</pdfuaid:conformance>
+        </rdf:Description>
+    </rdf:RDF>
+    '''
+    pdf_document.set_xml_metadata(xmp_metadata)
+    
+    # Update PDF metadata
+    current_metadata = pdf_document.metadata
+    current_metadata['title'] = title
+    pdf_document.set_metadata(current_metadata)
+    print(f'Filename : {filename} | Metadata updated for the PDF with Title: {title}')
+```
+
+### 6. Save to S3
+
+The updated PDF is saved with a `COMPLIANT_` prefix:
+
+```python
+def save_to_s3(local_path, bucket_name, file_key):
+    s3 = boto3.client('s3')
+    save_path = f"result/COMPLIANT_{file_key}"
+    with open(local_path, "rb") as data:
+        exponential_backoff_retry(
+            s3.upload_fileobj,
+            data,
+            bucket_name,
+            save_path,
+            retries=3,
+            base_delay=1,
+            backoff_factor=2
+        )
+    return save_path
+```
+
+## Output Structure
+
+On success:
+
+```json
+{
+  "statusCode": 200,
+  "body": {
+    "bucket": "pdf-processing-bucket",
+    "save_path": "result/COMPLIANT_document.pdf",
+    "title": "Comprehensive Guide to Web Accessibility Standards"
+  }
+}
+```
+
+<ResponseField name="statusCode" type="number" required>
+  HTTP status code (200 for success, 500 for errors)
+</ResponseField>
+
+<ResponseField name="body" type="object" required>
+  <ResponseField name="bucket" type="string">
+    The S3 bucket name
+  </ResponseField>
+  
+  <ResponseField name="save_path" type="string">
+    The S3 key where the updated PDF was saved
+  </ResponseField>
+  
+  <ResponseField name="title" type="string">
+    The AI-generated accessible title
+  </ResponseField>
+</ResponseField>
+
+## Error Handling
+
+The function has comprehensive error handling with exponential backoff:
+
+```python
+def exponential_backoff_retry(func, *args, retries=3, base_delay=1, backoff_factor=2, **kwargs):
+    attempt = 0
+    while True:
+        try:
+            return func(*args, **kwargs)
+        except Exception as e:
+            attempt += 1
+            if attempt >= retries:
+                print(f"[ExponentialBackoff] Exhausted retries for {func.__name__}. Error: {e}")
+                raise
+            sleep_time = base_delay * (backoff_factor ** (attempt - 1)) + random.uniform(0, 1)
+            print(f"[ExponentialBackoff] Attempt {attempt}/{retries} for {func.__name__} failed. "
+                  f"Sleeping for {sleep_time:.2f} seconds.")
+            time.sleep(sleep_time)
+```
+
+Error responses include detailed information:
+
+```json
+{
+  "statusCode": 500,
+  "body": {
+    "error": "Failed to generate title.",
+    "details": "document.pdf - Connection timeout"
+  }
+}
+```
+
+## IAM Permissions Required
+
+- `s3:GetObject` - Download merged PDF
+- `s3:PutObject` - Upload PDF with updated metadata
+- `bedrock:InvokeModel` - Call Amazon Bedrock for title generation
+- `sts:GetCallerIdentity` - Get account ID for Bedrock ARN
+- `cloudwatch:PutMetricData` - Log metrics
+
+## Bedrock Model Configuration
+
+The function uses Amazon Nova Pro for title generation:
+
+<ParamField path="model_name" type="string">
+  `us.amazon.nova-pro-v1:0`
+</ParamField>
+
+<ParamField path="model_id" type="string">
+  `arn:aws:bedrock:{region}:{account_id}:inference-profile/us.amazon.nova-pro-v1:0`
+</ParamField>
+
+## WCAG Compliance
+
+The generated titles comply with WCAG 2.1 AA guidelines:
+
+- **Clear and Concise**: Summarizes primary document focus
+- **Jargon-Free**: Avoids unnecessary technical language
+- **Distinguishable**: Unique and identifiable
+- **Understandable**: Clear to all users including those using assistive technologies
+
+## Step Functions Integration
+
+```python
+title_generator_lambda_task = tasks.LambdaInvoke(
+    self, "GenerateAccessibleTitle",
+    lambda_function=title_generator_lambda,
+    payload=sfn.TaskInput.from_object({
+        "Payload.$": "$"
+    })
+)
+```
+
+## Usage Example
+
+The function processes the merged PDF and generates an accessible title:
+
+**Input**:
+```
+PDFs merged successfully.
+Bucket: pdf-processing-bucket
+Merged File Key: temp/annual-report/merged_annual-report.pdf
+Merged File Name: annual-report.pdf
+```
+
+**Processing**:
+1. Downloads PDF from S3
+2. Extracts text: "Annual Financial Report 2024... Key highlights include..."
+3. Sends to Bedrock with current title: "annual-report.pdf"
+4. Receives AI-generated title: "Annual Financial Report 2024 - Key Highlights and Performance Metrics"
+5. Updates PDF metadata
+6. Saves to `result/COMPLIANT_annual-report.pdf`
+
+**Output**:
+```json
+{
+  "statusCode": 200,
+  "body": {
+    "bucket": "pdf-processing-bucket",
+    "save_path": "result/COMPLIANT_annual-report.pdf",
+    "title": "Annual Financial Report 2024 - Key Highlights and Performance Metrics"
+  }
+}
+```
+
+## Related Functions
+
+- [PDF Splitter Lambda](/api/pdf-splitter) - Initial PDF splitting
+- [PDF Merger Lambda](/api/pdf-merger) - Merges chunks before title generation
+- [Accessibility Checker Lambda](/api/accessibility-checker) - Validates final output

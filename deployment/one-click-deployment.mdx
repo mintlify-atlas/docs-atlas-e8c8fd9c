@@ -1,0 +1,731 @@
+---
+title: "One-Click Deployment"
+description: "Deploy PDF accessibility solutions using the automated deployment script"
+---
+
+The unified `deploy.sh` script provides an interactive, automated deployment process for both PDF accessibility solutions. This is the **recommended deployment method** for most users.
+
+## Overview
+
+The deployment script handles:
+
+- Solution selection (PDF-to-PDF or PDF-to-HTML)
+- AWS credential verification
+- Solution-specific configuration (Adobe credentials or Bedrock setup)
+- IAM role creation with scoped permissions
+- CodeBuild project creation and execution
+- Real-time deployment monitoring
+- Optional frontend UI deployment
+
+<Tip>
+  The script supports cascading deployments - you can deploy one solution first, then add the other, and optionally deploy the UI for both.
+</Tip>
+
+---
+
+## Before You Begin
+
+Ensure you've completed all [prerequisites](/deployment/prerequisites):
+
+- AWS account with appropriate permissions
+- CloudShell access or AWS CLI configured
+- Adobe credentials (for PDF-to-PDF) or Bedrock Data Automation access (for PDF-to-HTML)
+
+---
+
+## Deployment Process
+
+### Step 1: Clone the Repository
+
+Open AWS CloudShell and clone the repository:
+
+```bash
+git clone https://github.com/ASUCICREPO/PDF_Accessibility.git
+cd PDF_Accessibility
+```
+
+<Note>
+  The repository contains all necessary infrastructure code, Lambda functions, and Docker configurations.
+</Note>
+
+### Step 2: Run the Deployment Script
+
+Make the script executable and run it:
+
+```bash
+chmod +x deploy.sh
+./deploy.sh
+```
+
+The script will display a welcome screen with solution options:
+
+```
+🎉 Welcome to PDF Accessibility Solutions Enhanced Deployment! 🎉
+=====================================================================
+
+This tool will help you deploy PDF accessibility solutions:
+
+1. 📄 PDF-to-PDF Remediation
+   • Maintains original PDF format
+   • Uses Adobe PDF Services API
+   • Advanced processing with ECS and Step Functions
+   • Best for: Documents that must remain as PDFs
+
+2. 🌐 PDF-to-HTML Remediation
+   • Converts PDFs to accessible HTML
+   • Uses AWS Bedrock Data Automation
+   • Serverless Lambda-based processing
+   • Best for: Web-accessible content
+
+3. 🎨 Frontend UI
+   • Web interface for both solutions
+   • User authentication with Cognito
+   • File upload and processing monitoring
+   • Best for: End-user accessibility
+```
+
+### Step 3: Select Your Solution
+
+The script will prompt you to choose your first solution:
+
+```
+Which solution would you like to deploy first?
+1) PDF-to-PDF Remediation
+2) PDF-to-HTML Remediation
+
+Enter your choice (1 or 2):
+```
+
+<Tabs>
+  <Tab title="PDF-to-PDF">
+    Choose **option 1** if you need to:
+    - Maintain PDF format for regulatory compliance
+    - Process documents that must remain as PDFs
+    - Use Adobe's enterprise-grade PDF processing
+    - Handle complex PDF structures (forms, annotations)
+  </Tab>
+  <Tab title="PDF-to-HTML">
+    Choose **option 2** if you need to:
+    - Convert documents to web-accessible HTML
+    - Optimize for screen readers and assistive technology
+    - Reduce file sizes and improve load times
+    - Serve content directly on websites
+  </Tab>
+</Tabs>
+
+---
+
+## PDF-to-PDF Deployment
+
+### Adobe Credentials Setup
+
+After selecting PDF-to-PDF, the script will prompt for Adobe API credentials:
+
+```bash
+Adobe PDF Services API credentials are required:
+(These will be stored securely in AWS Secrets Manager)
+   Enter Adobe API Client ID: your-client-id-here
+   ✅ Client ID received!
+   Enter Adobe API Client Secret: your-client-secret-here
+   ✅ Client Secret received!
+```
+
+<Warning>
+  Never share or commit your Adobe credentials. The script stores them securely in AWS Secrets Manager.
+</Warning>
+
+The script will:
+
+1. Create a JSON credentials file
+2. Upload to AWS Secrets Manager at `/myapp/client_credentials`
+3. Configure ECS tasks and Lambda functions to access the secret
+4. Delete the temporary credentials file
+
+### Automated Infrastructure Setup
+
+The script automatically:
+
+<Steps>
+  <Step title="Verify AWS Credentials">
+    ```bash
+    🔍 Verifying AWS credentials...
+    ✅ AWS credentials verified. Account: 123456789012, Region: us-east-1
+    ```
+  </Step>
+
+  <Step title="Create IAM Role">
+    Creates a CodeBuild service role with scoped permissions:
+    
+    ```bash
+    🔐 Setting up IAM role for CodeBuild...
+    ✅ Role created with ARN: arn:aws:iam::123456789012:role/pdfremediation-...-codebuild-service-role
+    ```
+    
+    The role includes permissions for:
+    - S3 (CDK and application buckets)
+    - ECR (container image registry)
+    - Lambda function deployment
+    - ECS cluster and task management
+    - Step Functions state machines
+    - CloudFormation stack operations
+    - Secrets Manager access
+  </Step>
+
+  <Step title="Create CodeBuild Project">
+    ```bash
+    🏗️  Creating CodeBuild project...
+    📦 Project Configuration:
+       Name: pdfremediation-20260311120000
+       Repository: https://github.com/ASUCICREPO/PDF_Accessibility.git
+       Branch: main
+       Buildspec: buildspec-unified.yml
+       Solution: PDF-to-PDF Remediation
+    ✅ CodeBuild project 'pdfremediation-20260311120000' created successfully!
+    ```
+  </Step>
+
+  <Step title="Start Deployment Build">
+    ```bash
+    🚀 Starting the deployment build...
+    ✅ Build started successfully!
+       Build ID: pdfremediation-20260311120000:abc123-def456-ghi789
+    ```
+  </Step>
+</Steps>
+
+### Build Phases
+
+The CodeBuild project executes through multiple phases:
+
+<Accordion title="Install Phase">
+  ```bash
+  Installing dependencies...
+  - Runtime: Python 3.12, Node.js 18
+  - Installing AWS CDK
+  - Upgrading pip
+  ```
+</Accordion>
+
+<Accordion title="Pre-Build Phase">
+  ```bash
+  Pre-build phase started...
+  - Installing Python dependencies from requirements.txt
+  - Bootstrapping CDK environment
+  - Configuring ECR authentication
+  ```
+</Accordion>
+
+<Accordion title="Build Phase">
+  ```bash
+  Deploying PDF-to-PDF Remediation Solution...
+  - Deploying CDK stacks
+  - Creating S3 bucket (pdfaccessibility-...)
+  - Building and pushing Docker images to ECR
+  - Creating Lambda functions (splitter, merger, title-generator)
+  - Configuring ECS cluster and task definitions
+  - Creating Step Functions state machine
+  - Setting up CloudWatch dashboard
+  ```
+</Accordion>
+
+<Accordion title="Post-Build Phase">
+  ```bash
+  PDF-to-PDF deployment completed successfully!
+  Check the CloudWatch dashboard for monitoring.
+  ```
+</Accordion>
+
+### Monitoring Deployment
+
+The script monitors build progress in real-time:
+
+```bash
+📊 Monitoring deployment progress...
+PDF-to-PDF Remediation deployment typically takes 3-5 minutes... ⏰
+
+Build status: IN_PROGRESS
+................................................................
+🎉 PDF-to-PDF Remediation deployment completed successfully!
+```
+
+<Tip>
+  You can also monitor the build in the AWS Console at:
+  https://console.aws.amazon.com/codesuite/codebuild/projects
+</Tip>
+
+### Deployment Complete
+
+After successful deployment:
+
+```bash
+✅ PDF-to-PDF Remediation deployment summary complete!
+   📦 S3 Bucket: pdfaccessibility-123456789012-us-east-1
+```
+
+The infrastructure includes:
+- S3 bucket with `pdf/`, `temp/`, and `result/` folders
+- Lambda functions for PDF splitting and merging
+- ECS cluster with Fargate tasks for Adobe processing
+- Step Functions workflow orchestration
+- CloudWatch dashboard for monitoring
+
+---
+
+## PDF-to-HTML Deployment
+
+### Bedrock Data Automation Setup
+
+After selecting PDF-to-HTML, the script automatically:
+
+<Steps>
+  <Step title="Verify AWS Credentials">
+    ```bash
+    🔍 Verifying AWS credentials...
+    ✅ AWS credentials verified. Account: 123456789012, Region: us-east-1
+    ```
+  </Step>
+
+  <Step title="Create Bedrock Data Automation Project">
+    ```bash
+    🧠 PDF-to-HTML specific configuration...
+    Creating Bedrock Data Automation project: pdf2html-bda-project-20260311-120000
+    ✅ BDA project created successfully!
+       Project ARN: arn:aws:bedrock:us-east-1:123456789012:data-automation-project/...
+       S3 Bucket: pdf2html-bucket-123456789012-us-east-1
+    ```
+    
+    The BDA project configures:
+    - Document extraction granularity (document, page, element)
+    - Bounding box detection (enabled)
+    - Output format (HTML with additional files)
+  </Step>
+
+  <Step title="Create IAM Role">
+    Creates a CodeBuild service role with PDF-to-HTML specific permissions:
+    
+    ```bash
+    🔐 Setting up IAM role for CodeBuild...
+    📋 Creating IAM policy: pdfremediation-...-pdf2html-codebuild-policy
+    ✅ Policy ready
+    🔗 Attaching policy to role...
+    ✅ Role setup complete!
+    ```
+  </Step>
+
+  <Step title="Create CodeBuild Project">
+    ```bash
+    🏗️  Creating CodeBuild project...
+    📦 Project Configuration:
+       Name: pdfremediation-20260311120000-pdf2html
+       Compute Type: BUILD_GENERAL1_LARGE (for Docker builds)
+       Environment Variables:
+         - DEPLOYMENT_TYPE: pdf2html
+         - BUCKET_NAME: pdf2html-bucket-123456789012-us-east-1
+         - BDA_PROJECT_ARN: arn:aws:bedrock:...
+    ✅ CodeBuild project created successfully!
+    ```
+  </Step>
+</Steps>
+
+### Build Process
+
+The CodeBuild execution:
+
+<Accordion title="Pre-Build Phase">
+  ```bash
+  PDF-to-HTML pre-build steps...
+  - Verifying Docker installation
+  - Navigating to pdf2html directory
+  - Logging in to Amazon ECR
+  ```
+</Accordion>
+
+<Accordion title="Build Phase">
+  ```bash
+  Deploying PDF-to-HTML Remediation Solution...
+  
+  1. Creating S3 bucket (pdf2html-bucket-123456789012-us-east-1)
+     - Creating folders: uploads/, output/, remediated/
+     - Enabling versioning
+  
+  2. Creating ECR repository (pdf2html-lambda)
+  
+  3. Building Docker image
+     - Platform: linux/amd64
+     - Base image: python:3.12-slim
+     - Installing accessibility utility dependencies
+  
+  4. Pushing Docker image to ECR
+     - Repository URI: 123456789012.dkr.ecr.us-east-1.amazonaws.com/pdf2html-lambda:latest
+     - Verifying image in ECR
+  
+  5. Deploying CDK stack
+     - Bootstrapping CDK environment
+     - Creating Lambda function with container image
+     - Configuring S3 event notifications
+     - Setting up Bedrock permissions
+  ```
+</Accordion>
+
+<Accordion title="Post-Build Phase">
+  ```bash
+  PDF-to-HTML deployment completed successfully!
+  S3 Bucket: pdf2html-bucket-123456789012-us-east-1
+  BDA Project: arn:aws:bedrock:us-east-1:123456789012:data-automation-project/...
+  ```
+</Accordion>
+
+### Monitoring Deployment
+
+```bash
+📊 Monitoring deployment progress...
+PDF-to-HTML Remediation deployment typically takes 5-10 minutes... ⏰
+
+Build status: IN_PROGRESS
+................................................................
+🎉 PDF-to-HTML Remediation deployment completed successfully!
+
+✅ PDF-to-HTML Remediation deployment summary complete!
+   📦 S3 Bucket: pdf2html-bucket-123456789012-us-east-1
+   🧠 BDA Project: pdf2html-bda-project-20260311-120000
+```
+
+<Note>
+  PDF-to-HTML deployment takes longer due to Docker image building and pushing to ECR.
+</Note>
+
+### Deployment Complete
+
+The infrastructure includes:
+- S3 bucket with `uploads/`, `output/`, and `remediated/` folders
+- ECR repository with Lambda container image
+- Lambda function (Pdf2HtmlPipeline)
+- Bedrock Data Automation project
+- S3 event notification triggers
+- CloudWatch log group
+
+---
+
+## Cascading Deployment Options
+
+After deploying your first solution, the script offers additional options:
+
+```bash
+🤔 What would you like to do next?
+==================================
+
+1) Deploy PDF-to-HTML Remediation (complete both backend solutions)
+2) Deploy Frontend UI (for current solution)
+3) Finish (backend only)
+
+Enter your choice (1, 2, or 3):
+```
+
+### Deploy Both Solutions
+
+Choose **option 1** to deploy the other solution:
+
+- Creates a new CodeBuild project for the second solution
+- Configures solution-specific IAM permissions
+- Deploys infrastructure independently
+- Both solutions can be used simultaneously
+
+After deploying both backends, you'll be prompted to deploy the UI:
+
+```bash
+🎉 Both backend solutions deployed successfully!
+
+Would you like to deploy the Frontend UI? (y/n):
+```
+
+### Deploy Frontend UI Only
+
+Choose **option 2** to deploy the web interface for your current solution(s). See [UI Deployment](/deployment/ui-deployment) for details.
+
+### Finish Deployment
+
+Choose **option 3** to complete the deployment without additional components.
+
+---
+
+## Verification Steps
+
+After deployment completes, verify the infrastructure:
+
+<Tabs>
+  <Tab title="PDF-to-PDF">
+    <Steps>
+      <Step title="Check S3 Bucket">
+        ```bash
+        aws s3 ls | grep pdfaccessibility
+        ```
+        
+        Expected output:
+        ```
+        pdfaccessibility-123456789012-us-east-1
+        ```
+      </Step>
+
+      <Step title="Verify CloudFormation Stack">
+        ```bash
+        aws cloudformation describe-stacks --stack-name PDFAccessibility
+        ```
+        
+        Status should be `CREATE_COMPLETE`.
+      </Step>
+
+      <Step title="Check Lambda Functions">
+        ```bash
+        aws lambda list-functions --query 'Functions[?contains(FunctionName, `PDF`)].FunctionName'
+        ```
+        
+        Should show:
+        - PDFSplitterLambda
+        - PDFMergerLambda
+        - TitleGeneratorLambda
+        - PreRemediationAccessibilityChecker
+        - PostRemediationAccessibilityChecker
+      </Step>
+
+      <Step title="Verify Step Functions">
+        ```bash
+        aws stepfunctions list-state-machines
+        ```
+        
+        Should show the PDF processing state machine.
+      </Step>
+
+      <Step title="Check CloudWatch Dashboard">
+        Navigate to CloudWatch console to view the automatically created dashboard.
+      </Step>
+    </Steps>
+  </Tab>
+  <Tab title="PDF-to-HTML">
+    <Steps>
+      <Step title="Check S3 Bucket">
+        ```bash
+        aws s3 ls | grep pdf2html
+        ```
+        
+        Expected output:
+        ```
+        pdf2html-bucket-123456789012-us-east-1
+        ```
+      </Step>
+
+      <Step title="Verify CloudFormation Stack">
+        ```bash
+        aws cloudformation describe-stacks --stack-name Pdf2HtmlStack
+        ```
+        
+        Status should be `CREATE_COMPLETE`.
+      </Step>
+
+      <Step title="Check Lambda Function">
+        ```bash
+        aws lambda get-function --function-name Pdf2HtmlPipeline
+        ```
+        
+        Should show function details with container image configuration.
+      </Step>
+
+      <Step title="Verify ECR Repository">
+        ```bash
+        aws ecr describe-repositories --repository-names pdf2html-lambda
+        aws ecr list-images --repository-name pdf2html-lambda
+        ```
+        
+        Should show the repository with at least one image tagged `latest`.
+      </Step>
+
+      <Step title="Check Bedrock Data Automation Project">
+        ```bash
+        aws bedrock-data-automation list-data-automation-projects
+        ```
+        
+        Should show your newly created project.
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+---
+
+## Troubleshooting Deployment Issues
+
+### Build Failures
+
+<AccordionGroup>
+  <Accordion title="CodeBuild Permission Errors">
+    **Symptom:**
+    ```
+    AccessDenied: User is not authorized to perform: iam:CreateRole
+    ```
+    
+    **Solution:**
+    - Verify your AWS user has the required IAM permissions
+    - See [IAM Permissions Guide](/configuration/iam-permissions)
+    - Contact your AWS administrator to grant necessary permissions
+  </Accordion>
+
+  <Accordion title="ECR Login Failures">
+    **Symptom:**
+    ```
+    ERROR: ECR login failed!
+    ```
+    
+    **Solution:**
+    - Verify ECR permissions in your IAM policy
+    - Check that the region is correctly set
+    - Ensure Docker is running (if using local AWS CLI)
+  </Accordion>
+
+  <Accordion title="Docker Build Failures">
+    **Symptom:**
+    ```
+    ERROR: Docker build failed!
+    ```
+    
+    **Solution:**
+    - Check CodeBuild logs for specific error messages
+    - Verify the Dockerfile syntax
+    - Ensure base images are accessible
+    - Try increasing CodeBuild compute size to LARGE
+  </Accordion>
+
+  <Accordion title="Elastic IP Quota Exceeded">
+    **Symptom:**
+    ```
+    Resource handler returned message: "The maximum number of addresses has been reached."
+    ```
+    
+    **Solution:**
+    1. Go to [EC2 Service Quotas](https://console.aws.amazon.com/servicequotas/home/services/ec2/quotas)
+    2. Search for "Elastic IPs"
+    3. Request quota increase
+    4. Re-run deployment after approval (usually within minutes)
+  </Accordion>
+
+  <Accordion title="CDK Bootstrap Failures">
+    **Symptom:**
+    ```
+    CDK bootstrap failed
+    ```
+    
+    **Solution:**
+    - Verify CloudFormation permissions
+    - Check S3 permissions for CDK staging buckets
+    - Ensure the region supports CDK
+    - Try manually bootstrapping:
+      ```bash
+      cdk bootstrap aws://ACCOUNT-ID/REGION
+      ```
+  </Accordion>
+</AccordionGroup>
+
+### Viewing Build Logs
+
+To troubleshoot failed builds:
+
+```bash
+# List recent build runs
+aws codebuild list-builds-for-project --project-name YOUR-PROJECT-NAME
+
+# Get build details
+aws codebuild batch-get-builds --ids BUILD-ID
+
+# View CloudWatch logs
+LOG_GROUP="/aws/codebuild/YOUR-PROJECT-NAME"
+aws logs tail $LOG_GROUP --follow
+```
+
+Or view in the AWS Console:
+1. Navigate to [CodeBuild Console](https://console.aws.amazon.com/codesuite/codebuild/projects)
+2. Click your project name
+3. View build history and logs
+
+---
+
+## Redeployment
+
+To redeploy or update an existing deployment:
+
+### Using the Script
+
+Simply re-run the deployment script:
+
+```bash
+cd PDF_Accessibility
+./deploy.sh
+```
+
+The script will:
+- Reuse existing IAM roles if found
+- Update existing secrets if changed
+- Create a new CodeBuild project with a fresh timestamp
+- Deploy updated infrastructure
+
+### Using CodeBuild Directly
+
+Trigger a build manually:
+
+```bash
+aws codebuild start-build \
+  --project-name pdfremediation-TIMESTAMP \
+  --source-version main
+```
+
+### Using AWS Console
+
+1. Navigate to [CodeBuild Console](https://console.aws.amazon.com/codesuite/codebuild/projects)
+2. Select your project
+3. Click **Start build**
+4. Choose branch (default: `main`)
+5. Click **Start build**
+
+<Tip>
+  Keep your CodeBuild project names for easy redeployment. You can find them in the console or by running:
+  ```bash
+  aws codebuild list-projects
+  ```
+</Tip>
+
+---
+
+## Deployment Summary
+
+After successful deployment, you'll see a summary:
+
+```bash
+🎊 Deployment Complete!
+=======================
+
+📊 Deployment Summary:
+   ✅ PDF-to-PDF Remediation: pdfaccessibility-123456789012-us-east-1
+   ✅ PDF-to-HTML Remediation: pdf2html-bucket-123456789012-us-east-1
+
+🔍 Monitor builds in AWS Console:
+   https://console.aws.amazon.com/codesuite/codebuild/projects
+
+🚀 Your PDF accessibility solution is ready to use!
+Thank you for using PDF Accessibility Enhanced Deployment! 😊
+```
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Test Your Deployment" icon="flask" href="/usage/pdf-to-pdf-workflow">
+    Upload PDFs and verify accessibility remediation
+  </Card>
+  <Card title="Deploy UI" icon="browser" href="/deployment/ui-deployment">
+    Add a web interface for end users
+  </Card>
+  <Card title="Monitor Processing" icon="chart-line" href="/operations/monitoring">
+    Track processing metrics and logs
+  </Card>
+  <Card title="Configure Limits" icon="sliders" href="/configuration/limits-and-quotas">
+    Adjust processing limits and quotas
+  </Card>
+</CardGroup>

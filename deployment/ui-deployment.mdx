@@ -1,0 +1,603 @@
+---
+title: "UI Deployment"
+description: "Deploy the frontend web interface for PDF accessibility solutions"
+---
+
+The PDF Accessibility UI provides a user-friendly web interface for uploading PDFs and monitoring remediation progress. It connects to your deployed backend solutions and includes authentication via Amazon Cognito.
+
+<Note>
+  The UI can connect to either or both backend solutions (PDF-to-PDF and PDF-to-HTML). At least one backend must be deployed before deploying the UI.
+</Note>
+
+---
+
+## Overview
+
+The frontend UI includes:
+
+- **User Authentication** - Amazon Cognito user pools with email/password login
+- **File Upload Interface** - Drag-and-drop PDF uploads directly to S3
+- **Processing Monitoring** - Real-time status updates for remediation jobs
+- **Multi-Solution Support** - Switch between PDF-to-PDF and PDF-to-HTML solutions
+- **Result Download** - Access remediated files directly from the interface
+- **Responsive Design** - Mobile-friendly interface
+
+### Architecture Components
+
+- **AWS Amplify** - Frontend hosting and CI/CD
+- **Amazon Cognito** - User authentication and authorization
+- **Amazon S3** - Direct file uploads via presigned URLs
+- **AWS Lambda** - Backend API for job status and file access
+- **React** - Frontend framework
+
+---
+
+## Prerequisites
+
+Before deploying the UI:
+
+<Steps>
+  <Step title="Deploy Backend Solution">
+    At least one backend solution must be deployed:
+    - [PDF-to-PDF Solution](/deployment/one-click-deployment#pdf-to-pdf-deployment)
+    - [PDF-to-HTML Solution](/deployment/one-click-deployment#pdf-to-html-deployment)
+    
+    You'll need the S3 bucket name(s) from your backend deployment.
+  </Step>
+
+  <Step title="Identify Backend Buckets">
+    **PDF-to-PDF bucket:**
+    ```bash
+    aws s3 ls | grep pdfaccessibility
+    ```
+    
+    **PDF-to-HTML bucket:**
+    ```bash
+    aws s3 ls | grep pdf2html
+    ```
+    
+    Note the bucket names - you'll need them during UI deployment.
+  </Step>
+
+  <Step title="Verify AWS Permissions">
+    Ensure your AWS credentials have permissions for:
+    - AWS Amplify (app creation and deployment)
+    - Amazon Cognito (user pool creation)
+    - AWS Lambda (function deployment for APIs)
+    - Amazon S3 (bucket policy updates)
+    - AWS IAM (role creation for Amplify and Lambda)
+  </Step>
+</Steps>
+
+---
+
+## Deployment via Deploy Script
+
+The easiest way to deploy the UI is through the main deployment script:
+
+### Automatic UI Deployment
+
+When you deploy a backend solution using `deploy.sh`, the script will prompt you to deploy the UI:
+
+```bash
+🤔 What would you like to do next?
+==================================
+
+1) Deploy PDF-to-HTML Remediation (complete both backend solutions)
+2) Deploy Frontend UI (for current solution)
+3) Finish (backend only)
+
+Enter your choice (1, 2, or 3): 2
+```
+
+Choose **option 2** to deploy the UI.
+
+### UI Deployment Process
+
+The script automatically:
+
+<Steps>
+  <Step title="Validate Backend Deployment">
+    ```bash
+    ✅ Selected: Deploy Frontend UI
+    🎨 Deploying Frontend UI...
+    
+    🔧 UI Configuration:
+       PDF-to-PDF Bucket: pdfaccessibility-123456789012-us-east-1
+       PDF-to-HTML Bucket: pdf2html-bucket-123456789012-us-east-1
+    ```
+    
+    The script detects which backend solutions are deployed and configures the UI accordingly.
+  </Step>
+
+  <Step title="Clone UI Repository">
+    ```bash
+    📥 Cloning UI repository...
+    ```
+    
+    The script clones the frontend code from:
+    ```
+    https://github.com/ASUCICREPO/PDF_accessability_UI
+    ```
+  </Step>
+
+  <Step title="Configure Environment Variables">
+    The script sets:
+    ```bash
+    PROJECT_NAME=pdfremediation-20260311120000-ui
+    PDF_TO_PDF_BUCKET=pdfaccessibility-123456789012-us-east-1
+    PDF_TO_HTML_BUCKET=pdf2html-bucket-123456789012-us-east-1
+    TARGET_BRANCH=main
+    ```
+  </Step>
+
+  <Step title="Execute UI Deployment">
+    ```bash
+    🚀 Starting UI deployment...
+       This may take 10-15 minutes...
+    ```
+    
+    The UI deployment script:
+    1. Creates Amazon Cognito user pool
+    2. Deploys Lambda functions for API backend
+    3. Updates S3 bucket policies for presigned URL access
+    4. Creates AWS Amplify application
+    5. Connects to GitHub repository
+    6. Triggers initial build
+  </Step>
+
+  <Step title="Retrieve Amplify URL">
+    ```bash
+    ✅ UI deployment completed successfully!
+    🌐 Frontend URL: https://main.d1a2b3c4d5e6f7.amplifyapp.com
+    ```
+    
+    The script displays the Amplify URL where you can access the UI.
+  </Step>
+</Steps>
+
+---
+
+## Manual UI Deployment
+
+For advanced users who want more control over the UI deployment:
+
+### Step 1: Clone UI Repository
+
+```bash
+git clone https://github.com/ASUCICREPO/PDF_accessability_UI.git
+cd PDF_accessability_UI
+```
+
+### Step 2: Configure Environment Variables
+
+Set required environment variables:
+
+```bash
+export PROJECT_NAME="my-pdf-ui"
+export PDF_TO_PDF_BUCKET="pdfaccessibility-123456789012-us-east-1"
+export PDF_TO_HTML_BUCKET="pdf2html-bucket-123456789012-us-east-1"
+export TARGET_BRANCH="main"
+export AWS_REGION="us-east-1"
+```
+
+<Tabs>
+  <Tab title="Both Solutions">
+    If you deployed both backend solutions:
+    ```bash
+    export PDF_TO_PDF_BUCKET="your-pdf2pdf-bucket-name"
+    export PDF_TO_HTML_BUCKET="your-pdf2html-bucket-name"
+    ```
+  </Tab>
+  <Tab title="PDF-to-PDF Only">
+    If you only deployed PDF-to-PDF:
+    ```bash
+    export PDF_TO_PDF_BUCKET="your-pdf2pdf-bucket-name"
+    export PDF_TO_HTML_BUCKET="Null"
+    ```
+  </Tab>
+  <Tab title="PDF-to-HTML Only">
+    If you only deployed PDF-to-HTML:
+    ```bash
+    export PDF_TO_PDF_BUCKET="Null"
+    export PDF_TO_HTML_BUCKET="your-pdf2html-bucket-name"
+    ```
+  </Tab>
+</Tabs>
+
+### Step 3: Run UI Deployment Script
+
+```bash
+chmod +x deploy.sh
+./deploy.sh
+```
+
+The script will:
+1. Create IAM roles for Amplify and Lambda
+2. Deploy Cognito user pool
+3. Create API Lambda functions
+4. Deploy Amplify application
+5. Configure environment variables
+6. Trigger initial build
+
+### Step 4: Retrieve Deployment Outputs
+
+After deployment completes, get the Amplify URL:
+
+```bash
+aws cloudformation describe-stacks \
+    --stack-name ${PROJECT_NAME}-AmplifyHostingStack \
+    --query 'Stacks[0].Outputs[?OutputKey==`AmplifyWebsiteUrl`].OutputValue' \
+    --output text
+```
+
+---
+
+## Cognito User Management
+
+### Create Initial User
+
+After UI deployment, create your first user:
+
+<Steps>
+  <Step title="Get Cognito User Pool ID">
+    ```bash
+    USER_POOL_ID=$(aws cloudformation describe-stacks \
+        --stack-name ${PROJECT_NAME}-CognitoStack \
+        --query 'Stacks[0].Outputs[?OutputKey==`UserPoolId`].OutputValue' \
+        --output text)
+    
+    echo "User Pool ID: $USER_POOL_ID"
+    ```
+  </Step>
+
+  <Step title="Create Admin User">
+    ```bash
+    aws cognito-idp admin-create-user \
+        --user-pool-id $USER_POOL_ID \
+        --username admin@example.com \
+        --user-attributes Name=email,Value=admin@example.com \
+        --temporary-password TempPassword123! \
+        --message-action SUPPRESS
+    ```
+    
+    <Warning>
+      Change `admin@example.com` to your actual email address. The user will be prompted to change the temporary password on first login.
+    </Warning>
+  </Step>
+
+  <Step title="Set Permanent Password (Optional)">
+    ```bash
+    aws cognito-idp admin-set-user-password \
+        --user-pool-id $USER_POOL_ID \
+        --username admin@example.com \
+        --password YourSecurePassword123! \
+        --permanent
+    ```
+  </Step>
+</Steps>
+
+### Manage Users via Console
+
+1. Navigate to [Amazon Cognito Console](https://console.aws.amazon.com/cognito/)
+2. Select your user pool (named like `${PROJECT_NAME}-UserPool`)
+3. Click **Users** tab
+4. Use **Create user** to add new users
+5. Click on a username to:
+   - Reset password
+   - Disable/enable user
+   - View login history
+   - Modify user attributes
+
+---
+
+## UI Configuration
+
+### Environment Variables
+
+The UI uses these environment variables (set automatically during deployment):
+
+```bash
+# Backend Configuration
+REACT_APP_PDF_TO_PDF_BUCKET=pdfaccessibility-123456789012-us-east-1
+REACT_APP_PDF_TO_HTML_BUCKET=pdf2html-bucket-123456789012-us-east-1
+REACT_APP_AWS_REGION=us-east-1
+
+# Cognito Configuration
+REACT_APP_USER_POOL_ID=us-east-1_abc123def
+REACT_APP_USER_POOL_CLIENT_ID=1a2b3c4d5e6f7g8h9i0j
+
+# API Configuration
+REACT_APP_API_ENDPOINT=https://api.example.com/prod
+```
+
+### Amplify Environment Variables
+
+To update environment variables after deployment:
+
+<Steps>
+  <Step title="Navigate to Amplify Console">
+    1. Go to [AWS Amplify Console](https://console.aws.amazon.com/amplify/)
+    2. Select your app (PROJECT_NAME)
+    3. Click **Environment variables** in left navigation
+  </Step>
+
+  <Step title="Add or Modify Variables">
+    Click **Manage variables** and add/edit:
+    - Key: `REACT_APP_PDF_TO_PDF_BUCKET`
+    - Value: `your-bucket-name`
+    
+    Click **Save**
+  </Step>
+
+  <Step title="Redeploy Application">
+    Changes to environment variables require a rebuild:
+    ```bash
+    aws amplify start-job \
+        --app-id YOUR-APP-ID \
+        --branch-name main \
+        --job-type RELEASE
+    ```
+    
+    Or click **Redeploy this version** in the Amplify Console.
+  </Step>
+</Steps>
+
+---
+
+## Accessing the UI
+
+### First-Time Setup
+
+<Steps>
+  <Step title="Navigate to Amplify URL">
+    Open the URL displayed after deployment:
+    ```
+    https://main.d1a2b3c4d5e6f7.amplifyapp.com
+    ```
+  </Step>
+
+  <Step title="Login with Cognito Credentials">
+    Enter the email and password you created:
+    - Username: `admin@example.com`
+    - Password: Your permanent password
+    
+    If using a temporary password, you'll be prompted to create a new one.
+  </Step>
+
+  <Step title="Select Solution">
+    Choose which backend to use:
+    - **PDF-to-PDF** - Maintains PDF format
+    - **PDF-to-HTML** - Converts to accessible HTML
+    
+    <Note>
+      The UI automatically detects which backends are available based on the bucket configuration.
+    </Note>
+  </Step>
+
+  <Step title="Upload PDF Files">
+    - Drag and drop PDF files onto the upload area
+    - Or click **Browse** to select files
+    - Files are uploaded directly to S3
+    - Processing begins automatically
+  </Step>
+
+  <Step title="Monitor Processing">
+    View real-time processing status:
+    - **Uploading** - File transfer in progress
+    - **Processing** - Backend remediation active
+    - **Complete** - Remediated file ready
+    - **Failed** - Error occurred (view logs)
+  </Step>
+
+  <Step title="Download Results">
+    Click **Download** to retrieve remediated files:
+    - PDF-to-PDF: Accessible PDF in `result/` folder
+    - PDF-to-HTML: ZIP file with HTML and assets
+  </Step>
+</Steps>
+
+---
+
+## Monitoring UI Deployment
+
+### Amplify Build Logs
+
+View build progress:
+
+```bash
+# Get Amplify app ID
+APP_ID=$(aws amplify list-apps \
+    --query "apps[?name=='${PROJECT_NAME}'].appId" \
+    --output text)
+
+# List builds
+aws amplify list-jobs \
+    --app-id $APP_ID \
+    --branch-name main
+
+# Get build details
+aws amplify get-job \
+    --app-id $APP_ID \
+    --branch-name main \
+    --job-id JOB_ID
+```
+
+Or view in the [Amplify Console](https://console.aws.amazon.com/amplify/).
+
+### CloudWatch Logs
+
+API Lambda function logs:
+
+```bash
+# List log streams
+aws logs describe-log-streams \
+    --log-group-name /aws/lambda/${PROJECT_NAME}-API \
+    --order-by LastEventTime \
+    --descending \
+    --max-items 5
+
+# Tail logs
+aws logs tail /aws/lambda/${PROJECT_NAME}-API --follow
+```
+
+---
+
+## Troubleshooting UI Deployment
+
+<AccordionGroup>
+  <Accordion title="Amplify Build Fails">
+    **Symptom:**
+    ```
+    Build failed with exit code 1
+    ```
+    
+    **Solution:**
+    1. Check Amplify build logs in console
+    2. Verify environment variables are set correctly
+    3. Ensure all dependencies are listed in `package.json`
+    4. Check Node.js version compatibility
+  </Accordion>
+
+  <Accordion title="Cannot Access UI URL">
+    **Symptom:**
+    ```
+    ERR_NAME_NOT_RESOLVED or 404 Not Found
+    ```
+    
+    **Solution:**
+    - Wait 2-3 minutes after deployment for DNS propagation
+    - Verify the URL from CloudFormation outputs
+    - Check Amplify app status in console
+    - Ensure the build completed successfully
+  </Accordion>
+
+  <Accordion title="Cognito Login Fails">
+    **Symptom:**
+    ```
+    User does not exist
+    Incorrect username or password
+    ```
+    
+    **Solution:**
+    - Verify user was created in Cognito user pool
+    - Check that email address matches exactly
+    - Reset password via Cognito console
+    - Ensure User Pool ID and Client ID are correct in environment variables
+  </Accordion>
+
+  <Accordion title="File Upload Fails">
+    **Symptom:**
+    ```
+    Access Denied when uploading files
+    ```
+    
+    **Solution:**
+    - Verify S3 bucket policies allow presigned URL uploads
+    - Check Lambda function has `s3:PutObject` permission
+    - Ensure CORS is configured on S3 bucket
+    - Verify bucket names in environment variables are correct
+  </Accordion>
+
+  <Accordion title="Backend Connection Fails">
+    **Symptom:**
+    ```
+    Cannot connect to backend API
+    ```
+    
+    **Solution:**
+    - Verify backend solution is deployed and functional
+    - Check S3 bucket names in UI configuration
+    - Test backend directly by uploading to S3 manually
+    - Review Lambda function logs for errors
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Custom Domain Configuration
+
+To use a custom domain with your UI:
+
+<Steps>
+  <Step title="Register or Import Domain in Route 53">
+    ```bash
+    aws route53 create-hosted-zone \
+        --name example.com \
+        --caller-reference $(date +%s)
+    ```
+  </Step>
+
+  <Step title="Add Domain to Amplify App">
+    1. Open [Amplify Console](https://console.aws.amazon.com/amplify/)
+    2. Select your app
+    3. Click **Domain management**
+    4. Click **Add domain**
+    5. Enter your domain (e.g., `pdf-accessibility.example.com`)
+    6. Follow prompts to configure DNS
+  </Step>
+
+  <Step title="Update DNS Records">
+    Amplify provides DNS records to add to Route 53:
+    - CNAME record pointing to Amplify subdomain
+    - Certificate validation records (for HTTPS)
+    
+    Wait 15-30 minutes for DNS propagation.
+  </Step>
+
+  <Step title="Verify HTTPS Certificate">
+    Amplify automatically provisions an SSL/TLS certificate via AWS Certificate Manager.
+    
+    Check status in Amplify console under **Domain management**.
+  </Step>
+</Steps>
+
+---
+
+## UI Cleanup
+
+To remove the UI deployment:
+
+```bash
+# Delete Amplify app
+APP_ID=$(aws amplify list-apps \
+    --query "apps[?name=='${PROJECT_NAME}'].appId" \
+    --output text)
+
+aws amplify delete-app --app-id $APP_ID
+
+# Delete CloudFormation stacks
+aws cloudformation delete-stack --stack-name ${PROJECT_NAME}-AmplifyHostingStack
+aws cloudformation delete-stack --stack-name ${PROJECT_NAME}-CognitoStack
+aws cloudformation delete-stack --stack-name ${PROJECT_NAME}-APIStack
+
+# Delete Cognito user pool (if not deleted by stack)
+USER_POOL_ID=$(aws cognito-idp list-user-pools --max-results 60 \
+    --query "UserPools[?Name=='${PROJECT_NAME}-UserPool'].Id" \
+    --output text)
+
+aws cognito-idp delete-user-pool --user-pool-id $USER_POOL_ID
+```
+
+<Warning>
+  Deleting the UI does not affect backend deployments. Your PDF processing solutions remain functional.
+</Warning>
+
+---
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Test UI" icon="mouse-pointer" href="/usage/pdf-to-pdf-workflow">
+    Upload PDFs and test the complete workflow
+  </Card>
+  <Card title="Manage Users" icon="users" href="/configuration/iam-permissions">
+    Add users and configure access
+  </Card>
+  <Card title="Monitor Usage" icon="chart-bar" href="/operations/monitoring">
+    Track UI usage and performance
+  </Card>
+  <Card title="Troubleshoot Issues" icon="wrench" href="/operations/troubleshooting">
+    Resolve common deployment and runtime issues
+  </Card>
+</CardGroup>

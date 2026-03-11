@@ -1,0 +1,300 @@
+---
+title: "Limits and Quotas"
+description: "Document processing limits, resource allocations, and service quotas for the PDF Accessibility infrastructure"
+---
+
+The PDF Accessibility solution has configurable limits at multiple levels to control resource usage, processing capacity, and cost management. This page documents infrastructure-level limits and how to modify them.
+
+## Overview
+
+Limits exist at two levels:
+
+1. **User-Facing Limits** — Per-user quotas for file uploads, page counts, and file size (managed in the UI repository)
+2. **Infrastructure Limits** — Backend resource settings for Lambda, ECS, Step Functions, and processing (managed in this repository)
+
+<Note>
+This page covers infrastructure limits only. For user-facing limits managed through Cognito, see the [UI repository configuration](https://github.com/ASUCICREPO/PDF_accessability_UI).
+</Note>
+
+## Lambda Function Limits
+
+All Lambda functions in the PDF-to-PDF solution use the following resource allocations:
+
+<ParamField path="timeout" type="number" default="900">
+  Maximum execution time in seconds (15 minutes). This is the AWS Lambda maximum.
+</ParamField>
+
+### Function-Specific Memory Allocations
+
+| Lambda Function | Memory | Timeout | Configuration Location |
+|---|---|---|---|
+| PDF Splitter | 1024 MB | 900s (15 min) | `app.py:390` |
+| PDF Merger | 1024 MB | 900s (15 min) | `app.py:254` |
+| Title Generator | 1024 MB | 900s (15 min) | `app.py:280` |
+| Pre-Remediation Checker | 512 MB | 900s (15 min) | `app.py:316` |
+| Post-Remediation Checker | 512 MB | 900s (15 min) | `app.py:342` |
+
+<CodeGroup>
+
+```python Modifying Lambda Memory and Timeout
+pdf_splitter_lambda = lambda_.Function(
+    self, 'PdfChunkSplitterLambda',
+    runtime=lambda_.Runtime.PYTHON_3_12,
+    handler='main.lambda_handler',
+    code=lambda_.Code.from_docker_build("lambda/pdf-splitter-lambda"),
+    timeout=Duration.seconds(900),    # Maximum is 900 seconds (15 min)
+    memory_size=1024                  # In MB, range: 128–10240
+)
+```
+
+</CodeGroup>
+
+<Warning>
+Increasing Lambda memory also increases CPU allocation proportionally. Higher memory settings can improve performance but increase costs.
+</Warning>
+
+## ECS Task Limits
+
+Fargate tasks handle CPU-intensive PDF processing operations:
+
+<ParamField path="memory_limit_mib" type="number" default="1024">
+  Memory allocation in MiB. Supported values: 512, 1024, 2048, 4096, 8192, 16384, 30720.
+</ParamField>
+
+<ParamField path="cpu" type="number" default="256">
+  CPU allocation in units (256 = 0.25 vCPU). Supported values: 256, 512, 1024, 2048, 4096.
+</ParamField>
+
+### Task Resource Allocations
+
+| ECS Task | Memory | CPU | Configuration Location |
+|---|---|---|---|
+| Adobe AutoTag | 1024 MiB | 256 (0.25 vCPU) | `app.py:146` |
+| Alt Text Generator | 1024 MiB | 256 (0.25 vCPU) | `app.py:159` |
+
+<CodeGroup>
+
+```python Modifying ECS Task Resources
+adobe_autotag_task_def = ecs.FargateTaskDefinition(
+    self, "AdobeAutotagTaskDefinition",
+    memory_limit_mib=1024,   # Supported values: 512, 1024, 2048, 4096, ...
+    cpu=256,                 # Supported values: 256, 512, 1024, 2048, 4096
+    execution_role=ecs_task_execution_role,
+    task_role=ecs_task_role
+)
+```
+
+</CodeGroup>
+
+<Note>
+CPU and memory must use [valid Fargate combinations](https://docs.aws.amazon.com/AmazonECS/latest/developerguide/task-cpu-memory-error.html). Not all CPU/memory pairs are supported.
+</Note>
+
+## Step Functions Limits
+
+The Step Functions state machine orchestrates the PDF remediation workflow:
+
+<ParamField path="timeout" type="number" default="150">
+  State machine execution timeout in minutes.
+</ParamField>
+
+<ParamField path="max_concurrency" type="number" default="100">
+  Maximum number of parallel chunk processing operations in the Map state.
+</ParamField>
+
+<CodeGroup>
+
+```python Step Functions Configuration
+# State Machine overall timeout
+pdf_remediation_state_machine = sfn.StateMachine(
+    self, "PdfAccessibilityRemediationWorkflow",
+    definition=parallel_accessibility_workflow,
+    timeout=Duration.minutes(150),    # Change this value
+    logs=sfn.LogOptions(
+        destination=pdf_remediation_workflow_log_group,
+        level=sfn.LogLevel.ALL
+    )
+)
+
+# Maximum parallel chunk processing
+pdf_chunks_map_state = sfn.Map(
+    self, "ProcessPdfChunksInParallel",
+    max_concurrency=100,              # Change this value
+    items_path=sfn.JsonPath.string_at("$.chunks"),
+    result_path="$.MapResults"
+)
+```
+
+</CodeGroup>
+
+**Configuration Location:** `app.py:376` (state machine timeout), `app.py:236` (max concurrency)
+
+<Warning>
+Increasing `max_concurrency` can significantly increase parallel processing costs. Each concurrent execution launches an ECS Fargate task.
+</Warning>
+
+## Processing Configuration
+
+### PDF Chunk Size
+
+The PDF splitter divides large PDFs into smaller chunks for parallel processing:
+
+<ParamField path="pages_per_chunk" type="number" default="200">
+  Number of pages per chunk for parallel processing.
+</ParamField>
+
+**Configuration Location:** `lambda/pdf-splitter-lambda/main.py:146`
+
+<CodeGroup>
+
+```python Modifying Chunk Size
+# In lambda/pdf-splitter-lambda/main.py
+chunks = split_pdf_into_pages(
+    pdf_file_content, 
+    pdf_file_key, 
+    s3, 
+    bucket_name, 
+    200  # Number of pages per chunk
+)
+```
+
+</CodeGroup>
+
+<Note>
+Smaller chunks increase parallelism but create more overhead. Larger chunks reduce overhead but may hit Lambda/ECS timeout limits.
+</Note>
+
+### Image Processing Limits
+
+The Bedrock client has size restrictions for image processing:
+
+<ParamField path="MAX_IMAGE_SIZE" type="number" default="4000000">
+  Maximum image size in bytes (4 MB) for Bedrock model invocation.
+</ParamField>
+
+**Configuration Location:** `pdf2html/content_accessibility_utility_on_aws/remediate/services/bedrock_client.py`
+
+<CodeGroup>
+
+```python Image Size Limit
+MAX_IMAGE_SIZE = 4_000_000  # 4 MB — maximum allowed image size in bytes
+```
+
+</CodeGroup>
+
+Images exceeding this limit are automatically resized before being sent to Bedrock.
+
+## PDF-to-HTML Configuration
+
+The PDF-to-HTML pipeline uses a separate configuration file:
+
+**Configuration Location:** `pdf2html/content_accessibility_utility_on_aws/utils/config_defaults.yaml`
+
+<CodeGroup>
+
+```yaml config_defaults.yaml
+pdf:
+  extract_images: true
+  image_format: "png"
+  embed_fonts: false
+  single_file: false
+  continuous: true
+  embed_images: false
+  exclude_images: false
+  cleanup_bda_output: false
+
+audit:
+  severity_threshold: "minor"
+  detailed_context: true
+  skip_automated_checks: false
+
+remediate:
+  severity_threshold: "minor"
+  model_id: "us.amazon.nova-lite-v1:0"
+
+aws:
+  region: null
+  create_bda_project: false
+```
+
+</CodeGroup>
+
+These defaults can be overridden in three ways (in order of precedence):
+
+1. **Command-line arguments** — When using the CLI directly
+2. **Configuration file** — Pass a custom YAML file with `--config my-config.yaml`
+3. **Environment variables** — Prefix with `DOC_ACCESS_` (e.g., `DOC_ACCESS_PDF_IMAGE_FORMAT=jpg`)
+
+## AWS Service Quotas
+
+Before deploying, verify your AWS account has sufficient service quotas:
+
+### Required Service Quotas
+
+<Warning>
+The PDF-to-PDF solution requires at least **1 Elastic IP** for the NAT Gateway. Check your account limits before deployment.
+</Warning>
+
+| Service | Quota | Requirement |
+|---|---|---|
+| **Elastic IPs** | VPC Elastic IPs | At least 1 (for NAT Gateway) |
+| **Fargate** | Fargate On-Demand vCPU | At least 0.25 vCPU per concurrent task |
+| **Lambda** | Concurrent executions | At least 10 |
+| **Step Functions** | State machine executions | At least 100 concurrent |
+| **S3** | Buckets | At least 1 |
+| **ECR** | Repositories | At least 2 (for Docker images) |
+
+<Tip>
+You can check your current service quotas in the [AWS Service Quotas console](https://console.aws.amazon.com/servicequotas/).
+</Tip>
+
+### Requesting Quota Increases
+
+If you need higher quotas:
+
+1. Open the [Service Quotas console](https://console.aws.amazon.com/servicequotas/)
+2. Search for the service (e.g., "EC2")
+3. Find the specific quota (e.g., "EC2-VPC Elastic IPs")
+4. Click **Request quota increase**
+5. Enter the new desired value
+6. Submit the request
+
+Quota increase requests are typically processed within 24-48 hours.
+
+## Applying Configuration Changes
+
+After modifying any infrastructure settings in `app.py` or Lambda source code, redeploy the stack:
+
+<CodeGroup>
+
+```bash CDK Deploy
+cdk deploy
+```
+
+```bash Deployment Script
+chmod +x deploy.sh
+./deploy.sh
+```
+
+</CodeGroup>
+
+<Warning>
+Changes to infrastructure limits require a full CDK redeployment. This may cause brief service interruptions.
+</Warning>
+
+## Monitoring Resource Usage
+
+Monitor your resource usage through CloudWatch:
+
+- **Lambda metrics**: Invocations, duration, errors, throttles
+- **ECS metrics**: CPU utilization, memory utilization, task count
+- **Step Functions metrics**: Execution count, execution duration, failures
+- **S3 metrics**: Bucket size, request count
+
+The solution includes a CloudWatch dashboard with pre-configured widgets for monitoring. Access it from the CloudWatch console after deployment.
+
+## Related Resources
+
+- [IAM Permissions](/configuration/iam-permissions) — Required permissions for all resources
+- [Architecture Overview](/architecture/system-architecture) — How components interact
+- [Deployment Guide](/deployment/prerequisites) — Initial setup and deployment

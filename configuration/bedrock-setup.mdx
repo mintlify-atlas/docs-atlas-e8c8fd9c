@@ -1,0 +1,537 @@
+---
+title: "Bedrock Setup"
+description: "Configure AWS Bedrock model access and Data Automation for PDF accessibility remediation"
+---
+
+AWS Bedrock powers the AI-driven accessibility features in the PDF Accessibility solution. This page explains how to enable Bedrock foundation models and configure Bedrock Data Automation for PDF-to-HTML conversion.
+
+## Overview
+
+The solution uses Bedrock in two ways:
+
+1. **Foundation Models** — For generating alt text, titles, and accessibility metadata (both solutions)
+2. **Bedrock Data Automation (BDA)** — For converting PDFs to structured HTML (PDF-to-HTML solution only)
+
+<Note>
+Bedrock model access must be **explicitly enabled** in the AWS Console before deployment. Models are not enabled by default.
+</Note>
+
+## Required Bedrock Models
+
+### PDF-to-PDF Solution
+
+The PDF-to-PDF solution uses the following models:
+
+<ParamField path="amazon.nova-pro-v1:0" type="model" required>
+  **Used for:** Title generation, document metadata extraction
+  
+  **Configuration:** `app.py:302`, `lambda/title-generator-lambda/title_generator.py`
+</ParamField>
+
+<ParamField path="us.amazon.nova-pro-v1:0" type="model" required>
+  **Used for:** Alternative model identifier (cross-region support)
+  
+  **Configuration:** `app.py:302`
+</ParamField>
+
+### PDF-to-HTML Solution
+
+The PDF-to-HTML solution uses:
+
+<ParamField path="amazon.nova-lite-v1:0" type="model" required>
+  **Used for:** Alt text generation, accessibility remediation (default model)
+  
+  **Configuration:** `pdf2html/content_accessibility_utility_on_aws/utils/config_defaults.yaml`
+</ParamField>
+
+<ParamField path="us.amazon.nova-lite-v1:0" type="model" required>
+  **Used for:** Alternative model identifier (cross-region support)
+  
+  **Configuration:** IAM policies in deployment script
+</ParamField>
+
+<ParamField path="amazon.nova-pro-v1:0" type="model" optional>
+  **Used for:** Advanced remediation tasks requiring higher model capabilities
+  
+  **Configuration:** Can be specified via `--model-id` CLI option or config file
+</ParamField>
+
+## Enabling Bedrock Model Access
+
+### Step 1: Open the Bedrock Console
+
+1. Sign in to the [AWS Console](https://console.aws.amazon.com/)
+2. Navigate to [Amazon Bedrock](https://console.aws.amazon.com/bedrock/)
+3. **Important:** Ensure you're in the correct region (e.g., `us-west-2`, `us-east-1`)
+
+<Warning>
+Bedrock availability varies by region. The Nova family models are available in `us-east-1` and `us-west-2` at launch. Check the [AWS Regional Services List](https://aws.amazon.com/about-aws/global-infrastructure/regional-product-services/) for current availability.
+</Warning>
+
+### Step 2: Request Model Access
+
+1. In the Bedrock console, click **Model access** in the left sidebar
+2. Click **Enable specific models** (or **Manage model access** if already configured)
+3. Find and enable the following models:
+   - **Amazon Nova Pro** (amazon.nova-pro-v1:0)
+   - **Amazon Nova Lite** (amazon.nova-lite-v1:0)
+4. Click **Request model access**
+
+<Tip>
+You can also enable **Amazon Nova Micro** for experimentation, but it's not required for the solution.
+</Tip>
+
+### Step 3: Wait for Approval
+
+Model access is typically granted within a few minutes:
+
+1. Refresh the **Model access** page
+2. Wait for the status to change from **In progress** to **Access granted**
+3. You'll see a green checkmark next to enabled models
+
+<Note>
+Some models may require manual approval for certain AWS accounts. If access is not granted within 24 hours, contact AWS Support.
+</Note>
+
+### Step 4: Verify Access
+
+Test that you can invoke the models:
+
+<CodeGroup>
+
+```bash Verify Nova Pro Access
+aws bedrock-runtime invoke-model \
+  --model-id amazon.nova-pro-v1:0 \
+  --body '{"prompt":"Hello","max_tokens":10}' \
+  --cli-binary-format raw-in-base64-out \
+  /dev/stdout
+```
+
+```bash Verify Nova Lite Access
+aws bedrock-runtime invoke-model \
+  --model-id amazon.nova-lite-v1:0 \
+  --body '{"prompt":"Hello","max_tokens":10}' \
+  --cli-binary-format raw-in-base64-out \
+  /dev/stdout
+```
+
+```bash List Available Models
+aws bedrock list-foundation-models \
+  --region us-west-2 \
+  --query 'modelSummaries[?contains(modelId, `nova`)].{ModelId:modelId,Status:modelLifecycle.status}'
+```
+
+</CodeGroup>
+
+If successful, you'll receive a JSON response with model output.
+
+## Bedrock Data Automation Setup
+
+<Note>
+Bedrock Data Automation is **only required for the PDF-to-HTML solution**. Skip this section if you're only deploying PDF-to-PDF.
+</Note>
+
+### What is Bedrock Data Automation?
+
+Bedrock Data Automation (BDA) is a managed service for extracting structured content from documents. For PDF accessibility, BDA:
+
+- Converts PDF pages to structured HTML
+- Extracts document elements (text, images, tables)
+- Preserves layout and reading order
+- Provides bounding box coordinates for elements
+
+### Creating a BDA Project
+
+#### Option 1: Automatic Creation (Recommended)
+
+The deployment script automatically creates a BDA project:
+
+<CodeGroup>
+
+```bash deploy.sh (PDF-to-HTML)
+./deploy.sh
+# Select option 2: PDF-to-HTML Remediation
+```
+
+</CodeGroup>
+
+The script will:
+
+1. Create a BDA project with the required configuration
+2. Store the project ARN as an environment variable for Lambda
+3. Grant the Lambda role permission to invoke the project
+
+**Configuration Location:** `deploy.sh:120-161`
+
+#### Option 2: Manual Creation
+
+Create a BDA project manually using the AWS CLI:
+
+<CodeGroup>
+
+```bash Create BDA Project
+BDA_PROJECT_NAME="pdf-accessibility-bda-$(date +%Y%m%d-%H%M%S)"
+
+aws bedrock-data-automation create-data-automation-project \
+  --project-name "$BDA_PROJECT_NAME" \
+  --standard-output-configuration '{
+    "document": {
+      "extraction": {
+        "granularity": {
+          "types": ["DOCUMENT", "PAGE", "ELEMENT"]
+        },
+        "boundingBox": {
+          "state": "ENABLED"
+        }
+      },
+      "generativeField": {
+        "state": "DISABLED"
+      },
+      "outputFormat": {
+        "textFormat": {
+          "types": ["HTML"]
+        },
+        "additionalFileFormat": {
+          "state": "ENABLED"
+        }
+      }
+    }
+  }' \
+  --region us-west-2
+```
+
+</CodeGroup>
+
+Save the `projectArn` from the output:
+
+```json
+{
+  "projectArn": "arn:aws:bedrock:us-west-2:123456789012:data-automation-project/abc123",
+  "projectStage": "LIVE",
+  "status": "CREATING"
+}
+```
+
+### BDA Project Configuration
+
+The BDA project uses this configuration for optimal PDF-to-HTML conversion:
+
+<ParamField path="granularity.types" type="array" default='["DOCUMENT", "PAGE", "ELEMENT"]'>
+  Extraction granularity levels. Includes document-level, page-level, and element-level extraction.
+</ParamField>
+
+<ParamField path="boundingBox.state" type="string" default="ENABLED">
+  Enable bounding box coordinates for elements. Required for layout preservation.
+</ParamField>
+
+<ParamField path="generativeField.state" type="string" default="DISABLED">
+  Disable generative fields to focus on extraction accuracy.
+</ParamField>
+
+<ParamField path="outputFormat.textFormat.types" type="array" default='["HTML"]'>
+  Output format. HTML is required for accessibility remediation.
+</ParamField>
+
+<ParamField path="outputFormat.additionalFileFormat.state" type="string" default="ENABLED">
+  Enable additional file formats (images, metadata).
+</ParamField>
+
+### Verifying BDA Project Status
+
+<CodeGroup>
+
+```bash Check Project Status
+aws bedrock-data-automation get-data-automation-project \
+  --project-arn "arn:aws:bedrock:us-west-2:123456789012:data-automation-project/abc123" \
+  --region us-west-2
+```
+
+```bash List All Projects
+aws bedrock-data-automation list-data-automation-projects \
+  --region us-west-2
+```
+
+</CodeGroup>
+
+Wait for the status to change from `CREATING` to `ACTIVE` before deploying the Lambda function.
+
+## IAM Permissions for Bedrock
+
+### Foundation Model Permissions
+
+The following IAM permissions are required for model invocation:
+
+#### PDF-to-PDF Solution
+
+**Lambda (Title Generator):**
+
+<CodeGroup>
+
+```json Bedrock Model Access
+{
+    "Sid": "BedrockInvokeModel",
+    "Effect": "Allow",
+    "Action": ["bedrock:InvokeModel"],
+    "Resource": [
+        "arn:aws:bedrock:${Region}::foundation-model/us.amazon.nova-pro-v1:0",
+        "arn:aws:bedrock:${Region}::foundation-model/amazon.nova-pro-v1:0"
+    ]
+}
+```
+
+</CodeGroup>
+
+**Configuration Location:** `app.py:302`
+
+**ECS Tasks (Alt Text Generator):**
+
+<CodeGroup>
+
+```json ECS Bedrock Access
+{
+    "Sid": "BedrockInvokeModel",
+    "Effect": "Allow",
+    "Action": ["bedrock:InvokeModel"],
+    "Resource": ["*"]
+}
+```
+
+</CodeGroup>
+
+**Configuration Location:** `app.py:104`
+
+<Note>
+The ECS policy uses a wildcard to allow flexibility in model selection. In production, scope this to specific model ARNs.
+</Note>
+
+#### PDF-to-HTML Solution
+
+**Lambda (Full Pipeline):**
+
+<CodeGroup>
+
+```json Bedrock Model Invocation
+{
+    "Sid": "BedrockModelInvocation",
+    "Effect": "Allow",
+    "Action": [
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+    ],
+    "Resource": [
+        "arn:aws:bedrock:${Region}::foundation-model/us.amazon.nova-lite-v1:0",
+        "arn:aws:bedrock:${Region}::foundation-model/amazon.nova-lite-v1:0",
+        "arn:aws:bedrock:${Region}::foundation-model/us.amazon.nova-pro-v1:0",
+        "arn:aws:bedrock:${Region}::foundation-model/amazon.nova-pro-v1:0"
+    ]
+}
+```
+
+</CodeGroup>
+
+### Bedrock Data Automation Permissions
+
+**Lambda (PDF-to-HTML):**
+
+<CodeGroup>
+
+```json BDA Permissions
+{
+    "Sid": "BedrockDataAutomation",
+    "Effect": "Allow",
+    "Action": [
+        "bedrock:InvokeDataAutomationAsync",
+        "bedrock:GetDataAutomationStatus",
+        "bedrock:GetDataAutomationProject"
+    ],
+    "Resource": [
+        "${BdaProjectArn}",
+        "arn:aws:bedrock:${Region}:${AccountId}:data-automation-invocation/*",
+        "arn:aws:bedrock:${Region}:${AccountId}:data-automation-profile/*"
+    ]
+}
+```
+
+</CodeGroup>
+
+These permissions allow the Lambda function to:
+- Invoke BDA asynchronously for PDF conversion
+- Check the status of BDA jobs
+- Retrieve BDA project configuration
+
+## Regional Availability
+
+Bedrock services are not available in all AWS regions. Check availability before deployment:
+
+| Service | Available Regions |
+|---|---|
+| **Amazon Bedrock (Foundation Models)** | us-east-1, us-west-2, eu-west-1, ap-northeast-1, and more |
+| **Bedrock Data Automation** | us-east-1, us-west-2, eu-west-1 |
+| **Amazon Nova Models** | us-east-1, us-west-2 (as of launch) |
+
+<Warning>
+Always deploy the solution in a region where both Bedrock foundation models and Bedrock Data Automation (if using PDF-to-HTML) are available.
+</Warning>
+
+<Tip>
+For the most up-to-date regional availability, see the [AWS Regional Services List](https://aws.amazon.com/about-aws/global-infrastructure/regional-product-services/).
+</Tip>
+
+## Model Selection and Configuration
+
+You can customize which Bedrock model is used for accessibility remediation:
+
+### PDF-to-PDF Solution
+
+The title generator model is hardcoded to Nova Pro. To change it:
+
+1. Edit `lambda/title-generator-lambda/title_generator.py`
+2. Update the `model_id` variable
+3. Update the IAM policy in `app.py:302` to include the new model ARN
+4. Redeploy the stack
+
+### PDF-to-HTML Solution
+
+The remediation model can be configured via:
+
+**1. Configuration File:**
+
+<CodeGroup>
+
+```yaml config.yaml
+remediate:
+  model_id: "amazon.nova-pro-v1:0"  # Change to desired model
+  severity_threshold: "minor"
+```
+
+</CodeGroup>
+
+**2. Command-Line Argument:**
+
+<CodeGroup>
+
+```bash CLI Override
+content-accessibility-utility-on-aws remediate \
+  --input document.html \
+  --output remediated.html \
+  --model-id amazon.nova-pro-v1:0
+```
+
+</CodeGroup>
+
+**3. Environment Variable:**
+
+<CodeGroup>
+
+```bash Environment Variable
+export DOC_ACCESS_REMEDIATE_MODEL_ID="amazon.nova-pro-v1:0"
+```
+
+</CodeGroup>
+
+<Note>
+If you change the model, ensure the IAM policy includes the new model ARN and that model access is enabled in the Bedrock console.
+</Note>
+
+## Cost Considerations
+
+### Foundation Model Pricing
+
+Bedrock foundation models are charged based on:
+
+- **Input tokens** — Tokens in the prompt/request
+- **Output tokens** — Tokens in the model response
+
+Pricing varies by model:
+
+| Model | Input (per 1K tokens) | Output (per 1K tokens) |
+|---|---|---|
+| **Nova Micro** | $0.000035 | $0.00014 |
+| **Nova Lite** | $0.00006 | $0.00024 |
+| **Nova Pro** | $0.0008 | $0.0032 |
+
+<Tip>
+For cost optimization, use Nova Lite for high-volume remediation tasks and reserve Nova Pro for complex documents requiring advanced reasoning.
+</Tip>
+
+### Bedrock Data Automation Pricing
+
+BDA charges per page processed:
+
+- **Standard processing**: $0.10 per page
+- **Includes**: HTML extraction, element detection, bounding boxes
+
+<Warning>
+BDA costs can add up quickly for large document volumes. Monitor usage in the CloudWatch dashboard and set up billing alarms.
+</Warning>
+
+### Cost Estimation
+
+Example cost for processing 100 PDFs (10 pages each):
+
+- **BDA**: 1,000 pages × $0.10 = **$100**
+- **Nova Lite (remediation)**: ~50K tokens × $0.00024 = **$12**
+- **Total**: ~**$112**
+
+<Tip>
+Use the AWS Pricing Calculator to estimate costs for your expected volume: [https://calculator.aws/](https://calculator.aws/)
+</Tip>
+
+## Troubleshooting
+
+<AccordionGroup>
+
+<Accordion title="AccessDenied: You don't have permission to invoke model">
+
+**Cause:** Bedrock model access not enabled in the console.
+
+**Solution:**
+1. Go to the [Bedrock console](https://console.aws.amazon.com/bedrock/)
+2. Click **Model access** → **Manage model access**
+3. Enable the required models
+4. Wait for access to be granted
+
+</Accordion>
+
+<Accordion title="ValidationException: Model ID not found">
+
+**Cause:** Model not available in your region.
+
+**Solution:** Deploy the solution in a supported region (us-east-1 or us-west-2 for Nova models).
+
+</Accordion>
+
+<Accordion title="ResourceNotFoundException: BDA project not found">
+
+**Cause:** BDA project ARN is incorrect or project was deleted.
+
+**Solution:**
+1. Verify the project exists:
+   ```bash
+   aws bedrock-data-automation list-data-automation-projects --region us-west-2
+   ```
+2. Update the Lambda environment variable with the correct ARN
+3. Redeploy if necessary
+
+</Accordion>
+
+<Accordion title="ThrottlingException: Rate limit exceeded">
+
+**Cause:** Too many concurrent Bedrock API calls.
+
+**Solution:**
+1. Reduce the Step Functions `max_concurrency` setting
+2. Implement exponential backoff in Lambda code
+3. Request a quota increase for Bedrock API calls
+
+</Accordion>
+
+</AccordionGroup>
+
+## Related Resources
+
+- [IAM Permissions](/configuration/iam-permissions) — Bedrock-specific IAM policies
+- [Limits and Quotas](/configuration/limits-and-quotas) — Service quotas and throttling limits
+- [AWS Bedrock Documentation](https://docs.aws.amazon.com/bedrock/) — Official Bedrock docs
+- [Amazon Nova Models](https://aws.amazon.com/bedrock/nova/) — Nova model family details
+- [Bedrock Data Automation](https://docs.aws.amazon.com/bedrock/latest/userguide/data-automation.html) — BDA documentation

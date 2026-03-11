@@ -1,0 +1,181 @@
+---
+title: 'Architecture Overview'
+description: 'High-level architecture of the PDF Accessibility solutions'
+icon: 'diagram-project'
+---
+
+## Introduction
+
+The PDF Accessibility project provides two complementary AWS-based solutions for remediating PDF documents to meet WCAG 2.1 Level AA accessibility standards:
+
+1. **PDF-to-PDF Remediation**: Processes PDFs while maintaining the original PDF format
+2. **PDF-to-HTML Remediation**: Converts PDFs to accessible HTML format
+
+Both solutions leverage AWS serverless and containerized services combined with generative AI to automate accessibility improvements.
+
+## Architecture Diagram
+
+![Architecture Overview](/images/architecture.png)
+
+## Core AWS Services
+
+Both solutions utilize a serverless architecture built on AWS managed services:
+
+<CardGroup cols={2}>
+  <Card title="Amazon S3" icon="database">
+    Central storage for input PDFs, intermediate processing files, and final outputs
+  </Card>
+  <Card title="AWS Lambda" icon="bolt">
+    Serverless compute for PDF processing, splitting, merging, and orchestration
+  </Card>
+  <Card title="Amazon ECS Fargate" icon="box">
+    Containerized tasks for Adobe autotag processing and alt-text generation (PDF-to-PDF)
+  </Card>
+  <Card title="AWS Step Functions" icon="diagram-nested">
+    Workflow orchestration for parallel PDF chunk processing (PDF-to-PDF)
+  </Card>
+  <Card title="Amazon Bedrock" icon="brain">
+    Generative AI models for alt-text generation, title generation, and HTML remediation
+  </Card>
+  <Card title="Amazon CloudWatch" icon="chart-line">
+    Comprehensive monitoring, logging, and dashboard visualization
+  </Card>
+</CardGroup>
+
+## Data Flow Overview
+
+### PDF-to-PDF Processing Pipeline
+
+1. **Ingestion**: PDF uploaded to S3 `pdf/` folder
+2. **Splitting**: Lambda function splits PDF into 200-page chunks
+3. **Parallel Processing**: Step Functions orchestrates parallel chunk processing
+4. **Adobe Autotag**: ECS tasks add structural tags using Adobe PDF Services API
+5. **Alt-Text Generation**: ECS tasks generate image descriptions using Amazon Bedrock
+6. **Merging**: Lambda function merges processed chunks back into single PDF
+7. **Title Generation**: Lambda generates accessible document title using Bedrock
+8. **Accessibility Auditing**: Pre and post-remediation accessibility checks
+9. **Output**: Compliant PDF saved to S3 `result/` folder
+
+### PDF-to-HTML Processing Pipeline
+
+1. **Ingestion**: PDF uploaded to S3 `uploads/` folder
+2. **Bedrock Data Automation**: PDF parsed and converted to HTML structure
+3. **Remediation**: Lambda applies accessibility improvements using AI utility
+4. **Image Processing**: Images extracted with AI-generated alt text
+5. **Output**: ZIP package with accessible HTML, images, and reports saved to S3
+
+## Security Architecture
+
+<AccordionGroup>
+  <Accordion title="Encryption">
+    - **S3 Buckets**: Server-side encryption with AWS managed keys (SSE-S3)
+    - **Enforce SSL**: All S3 buckets require HTTPS connections
+    - **Versioning**: Enabled on processing bucket for data protection
+  </Accordion>
+  
+  <Accordion title="IAM Permissions">
+    - **Least Privilege**: Each service has scoped permissions for specific resources
+    - **Task Roles**: Separate execution and task roles for ECS containers
+    - **Secrets Manager**: Adobe API credentials stored securely with restricted access
+  </Accordion>
+  
+  <Accordion title="Network Security">
+    - **VPC Isolation**: ECS tasks run in private subnets with NAT gateway
+    - **VPC Endpoints**: Private connectivity to ECR, S3 for faster, secure access
+    - **No Public IPs**: Fargate tasks do not have public IP addresses
+  </Accordion>
+</AccordionGroup>
+
+## Performance Optimizations
+
+### PDF-to-PDF Solution
+
+- **Parallel Processing**: Up to 100 concurrent chunk processing tasks via Step Functions
+- **Chunking Strategy**: 200 pages per chunk balances parallelism with overhead
+- **zstd Compression**: Docker images use zstd (faster than gzip) for 2-3x faster Fargate cold starts
+- **VPC Endpoints**: ECR and S3 endpoints reduce cold start by 10-15 seconds
+- **ECS Task Configuration**:
+  - CPU: 256 (0.25 vCPU)
+  - Memory: 1024 MB
+  - Platform: Linux AMD64
+
+### PDF-to-HTML Solution
+
+- **Lambda Container**: 15 GB ephemeral storage for large PDF processing
+- **Idempotency**: Automatic detection of already-processed files to prevent reprocessing
+- **Cleanup**: Automatic deletion of intermediate Bedrock files after processing
+- **Memory**: 10,240 MB for handling large documents
+- **Timeout**: 15 minutes for comprehensive processing
+
+## Monitoring and Observability
+
+### CloudWatch Integration
+
+Both solutions provide comprehensive monitoring:
+
+- **Log Groups**:
+  - Lambda execution logs
+  - ECS task logs (Adobe autotag, alt-text generation)
+  - Step Functions workflow logs
+- **CloudWatch Dashboard** (PDF-to-PDF):
+  - File processing status
+  - Per-component logs with filename filtering
+  - Real-time workflow execution tracking
+- **Metrics**:
+  - Custom CloudWatch metrics for processing status
+  - Lambda invocations and durations
+  - ECS task success/failure rates
+
+<Info>
+Logs are retained for 1 month with automatic cleanup to optimize costs.
+</Info>
+
+## Deployment Architecture
+
+### Infrastructure as Code
+
+- **AWS CDK**: Python-based infrastructure definitions
+- **Unified Deployment**: Single script deploys either or both solutions
+- **AWS CodeBuild**: Automated CI/CD pipeline for deployments
+- **CloudShell Ready**: Pre-configured for AWS CloudShell execution
+
+### Resource Naming
+
+- **PDF-to-PDF Bucket**: `pdfaccessibility-*`
+- **PDF-to-HTML Bucket**: `pdf2html-bucket-*`
+- **Stack Name**: `PDFAccessibility`
+- **Log Groups**: `/ecs/pdf-remediation/*` and `/aws/lambda/*`
+
+## Cost Optimization
+
+<Card title="Cost-Effective Design" icon="dollar-sign">
+  - **Serverless Architecture**: Pay only for actual processing time
+  - **Fargate Spot**: Optional Fargate Spot instances for cost savings (not default)
+  - **S3 Lifecycle Policies**: Automatic cleanup of temporary files
+  - **Single NAT Gateway**: Shared across availability zones
+  - **Log Retention**: 1 month retention balances observability and cost
+</Card>
+
+## Scalability
+
+- **Horizontal Scaling**: Automatic scaling of Lambda and Fargate tasks
+- **Concurrent Processing**: 100 parallel Step Functions map iterations
+- **S3 Event Fanout**: Multiple PDFs trigger independent processing workflows
+- **No Cold Start Mitigation**: Architecture optimized for cold starts via VPC endpoints
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="PDF-to-PDF Details" icon="file-pdf" href="/architecture/pdf-to-pdf">
+    Deep dive into the PDF format preservation solution
+  </Card>
+  <Card title="PDF-to-HTML Details" icon="code" href="/architecture/pdf-to-html">
+    Explore the HTML conversion architecture
+  </Card>
+  <Card title="Deployment Guide" icon="rocket" href="/deployment/one-click-deployment">
+    Deploy the solutions to your AWS account
+  </Card>
+  <Card title="Monitoring" icon="chart-line" href="/operations/monitoring">
+    Configure monitoring and alerting
+  </Card>
+</CardGroup>

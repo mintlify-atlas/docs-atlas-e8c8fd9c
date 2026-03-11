@@ -1,0 +1,285 @@
+---
+title: 'PDF Merger Lambda'
+description: 'Merges processed PDF chunks back into a single document after remediation'
+---
+
+## Overview
+
+The PDF Merger Lambda function is invoked by the Step Functions workflow after all PDF chunks have been processed through the Adobe Autotag and Alt Text Generation tasks. It downloads all processed chunks, merges them into a single PDF, and uploads the merged result back to S3.
+
+## Function Details
+
+<ParamField path="handler" type="string" required>
+  `com.example.App::handleRequest`
+</ParamField>
+
+<ParamField path="runtime" type="string" required>
+  Java 21
+</ParamField>
+
+<ParamField path="timeout" type="number">
+  900 seconds (15 minutes)
+</ParamField>
+
+<ParamField path="memory" type="number">
+  1024 MB
+</ParamField>
+
+## Environment Variables
+
+<ParamField path="BUCKET_NAME" type="string" required>
+  The name of the S3 bucket where PDFs are stored. This is automatically configured by the CDK stack from `pdf_processing_bucket.bucket_name`.
+</ParamField>
+
+## Input Structure
+
+The function receives input from the Step Functions Map state with an array of processed chunk file names:
+
+```json
+{
+  "fileNames": [
+    "temp/document/document_chunk_1.pdf",
+    "temp/document/document_chunk_2.pdf",
+    "temp/document/document_chunk_3.pdf"
+  ]
+}
+```
+
+<ParamField path="fileNames" type="array" required>
+  Array of S3 keys for the processed PDF chunks to merge. These keys point to the chunks that have been processed with Adobe Autotag and Alt Text Generation.
+</ParamField>
+
+## Processing Logic
+
+### 1. Extract and Modify Chunk Keys
+
+The function prepends `FINAL_` to each chunk filename to locate the processed versions:
+
+```java
+List<String> modifiedPdfKeys = pdfKeys.stream()
+    .map(key -> {
+        int lastSlashIndex = key.lastIndexOf('/');
+        if (lastSlashIndex != -1) {
+            String directory = key.substring(0, lastSlashIndex + 1);
+            String fileName = key.substring(lastSlashIndex + 1);
+            return directory + "FINAL_" + fileName;
+        } else {
+            return "FINAL_" + key;
+        }
+    })
+    .collect(Collectors.toList());
+```
+
+For example:
+- Input: `temp/document/document_chunk_1.pdf`
+- Modified: `temp/document/FINAL_document_chunk_1.pdf`
+
+### 2. Determine Output Path
+
+The merged PDF is saved with a specific naming convention:
+
+```java
+String baseFileName = pdfKeys.get(0)
+    .substring(pdfKeys.get(0).lastIndexOf('/') + 1)
+    .replaceAll("_chunk_\\d+", "");
+    
+String mergedFilePath = "/tmp/merged_" + baseFileName;
+String outputKey = String.format("temp/%s/merged_%s", 
+                                 baseFileName.replace(".pdf", ""), 
+                                 baseFileName);
+```
+
+Example output: `temp/document/merged_document.pdf`
+
+### 3. Download Chunks from S3
+
+The `downloadPDF()` method retrieves each processed chunk:
+
+```java
+private void downloadPDF(String bucketName, String key, String baseFileName) throws IOException {
+    File localFile = new File("/tmp/" + key.substring(key.lastIndexOf('/') + 1));
+    System.out.println(String.format("Filename: %s, Downloading file from S3: %s to %s", 
+                                     baseFileName, key, localFile.getPath()));
+    s3Client.getObject(new GetObjectRequest(bucketName, key), localFile);
+}
+```
+
+### 4. Merge PDFs
+
+The function uses Apache PDFBox's `PDFMergerUtility` to combine chunks:
+
+```java
+private void mergePDFs(List<String> sourceKeys, String destinationPath, String baseFileName) 
+        throws IOException {
+    PDFMergerUtility pdfMerger = new PDFMergerUtility();
+
+    for (String key : sourceKeys) {
+        String localFilePath = "/tmp/" + key.substring(key.lastIndexOf('/') + 1);
+        File localFile = new File(localFilePath);
+
+        if (localFile.exists()) {
+            System.out.println(String.format("Filename: %s, Adding PDF to merge: %s", 
+                                           baseFileName, localFilePath));
+            pdfMerger.addSource(localFile);
+        } else {
+            System.out.println(String.format("Filename: %s, File not found: %s", 
+                                           baseFileName, localFilePath));
+        }
+    }
+
+    pdfMerger.setDestinationFileName(destinationPath);
+    pdfMerger.mergeDocuments(null);
+    System.out.println(String.format("Filename: %s, PDFs merged successfully into: %s", 
+                                    baseFileName, destinationPath));
+}
+```
+
+### 5. Upload Merged PDF
+
+The merged PDF is uploaded back to S3:
+
+```java
+private void uploadPDF(String bucketName, String key, String filePath, String baseFileName) {
+    System.out.println(String.format("Filename: %s, Uploading merged PDF to S3: %s as %s", 
+                                    baseFileName, filePath, key));
+    s3Client.putObject(new PutObjectRequest(bucketName, key, new File(filePath)));
+    logFileStatus(baseFileName);
+}
+```
+
+## Output Structure
+
+The function returns a formatted string that is parsed by the Title Generator Lambda:
+
+```
+PDFs merged successfully.
+Bucket: pdf-processing-bucket-name
+Merged File Key: temp/document/merged_document.pdf
+Merged File Name: document.pdf
+```
+
+<ResponseField name="Bucket" type="string" required>
+  The S3 bucket name where the merged PDF was uploaded
+</ResponseField>
+
+<ResponseField name="Merged File Key" type="string" required>
+  The full S3 key path to the merged PDF
+</ResponseField>
+
+<ResponseField name="Merged File Name" type="string" required>
+  The base filename of the merged PDF
+</ResponseField>
+
+## Return Value
+
+On success:
+```java
+return String.format("PDFs merged successfully.\nBucket: %s\nMerged File Key: %s\nMerged File Name: %s", 
+                     bucketName, outputKey, baseFileName);
+```
+
+On failure:
+```java
+System.out.println("File: " + baseFileName + ", Status: Failed in Merging the PDF");
+return "Failed to merge PDFs.";
+```
+
+## CloudWatch Metrics
+
+The function logs detailed processing status:
+
+```java
+private void logFileStatus(String baseFileName) {
+    baseFileName = baseFileName.replace(".pdf", "");
+    System.out.println(String.format("File: %s, Status: succeeded", baseFileName));
+}
+```
+
+Logging output includes:
+- File download progress
+- PDF merge operations
+- Upload confirmation
+- Final success/failure status
+
+## Error Handling
+
+The function handles errors gracefully:
+
+```java
+try {
+    // Download PDFs from S3
+    for (String key : modifiedPdfKeys) {
+        downloadPDF(bucketName, key, baseFileName);
+    }
+
+    // Merge the PDFs
+    mergePDFs(modifiedPdfKeys, mergedFilePath, baseFileName);
+   
+    // Upload merged PDF back to S3
+    uploadPDF(bucketName, outputKey, mergedFilePath, baseFileName);
+
+    return formattedSuccessMessage;
+} catch (Exception e) {
+    System.out.println("File: " + baseFileName + ", Status: Failed in Merging the PDF");
+    System.out.println(String.format("Filename: %s, File not found: %s", 
+                                    baseFileName, e.getMessage()));
+    return "Failed to merge PDFs.";
+}
+```
+
+## IAM Permissions Required
+
+- `s3:GetObject` - Download processed PDF chunks
+- `s3:PutObject` - Upload merged PDF
+- `cloudwatch:PutMetricData` - Log metrics
+
+## Dependencies
+
+The function uses Apache PDFBox for PDF manipulation:
+
+```xml
+<dependency>
+    <groupId>org.apache.pdfbox</groupId>
+    <artifactId>pdfbox</artifactId>
+    <version>2.x.x</version>
+</dependency>
+```
+
+## Step Functions Integration
+
+The Lambda is invoked as a Step Functions task:
+
+```python
+pdf_merger_lambda_task = tasks.LambdaInvoke(self, "MergePdfChunks",
+    lambda_function=pdf_merger_lambda,
+    payload=sfn.TaskInput.from_object({
+        "fileNames.$": "$.chunks[*].s3_key"
+    }),
+    output_path=sfn.JsonPath.string_at("$.Payload")
+)
+```
+
+## Usage Example
+
+The function is invoked automatically by Step Functions after chunk processing:
+
+```json
+{
+  "fileNames": [
+    "temp/report/FINAL_report_chunk_1.pdf",
+    "temp/report/FINAL_report_chunk_2.pdf"
+  ]
+}
+```
+
+Result:
+- Downloads both chunks from S3
+- Merges them using PDFBox
+- Uploads to `temp/report/merged_report.pdf`
+- Returns metadata for title generation
+
+## Related Functions
+
+- [PDF Splitter Lambda](/api/pdf-splitter) - Splits PDFs into chunks
+- [Title Generator Lambda](/api/title-generator) - Processes the merged PDF
+- [Accessibility Checker Lambda](/api/accessibility-checker) - Audits merged PDF

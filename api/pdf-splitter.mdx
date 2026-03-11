@@ -1,0 +1,271 @@
+---
+title: 'PDF Splitter Lambda'
+description: 'Automatically splits uploaded PDFs into chunks and initiates the remediation workflow'
+---
+
+## Overview
+
+The PDF Splitter Lambda function is triggered automatically when a PDF file is uploaded to the S3 bucket's `pdf/` prefix. It downloads the PDF, splits it into manageable chunks (200 pages per chunk by default), uploads each chunk to S3, and starts the Step Functions remediation workflow.
+
+## Function Details
+
+<ParamField path="handler" type="string" required>
+  `main.lambda_handler`
+</ParamField>
+
+<ParamField path="runtime" type="string" required>
+  Python 3.12
+</ParamField>
+
+<ParamField path="timeout" type="number">
+  900 seconds (15 minutes)
+</ParamField>
+
+<ParamField path="memory" type="number">
+  1024 MB
+</ParamField>
+
+## Trigger
+
+The function is triggered by S3 events:
+- **Event Type**: `OBJECT_CREATED`
+- **Prefix Filter**: `pdf/`
+- **Suffix Filter**: `.pdf`
+
+## Environment Variables
+
+<ParamField path="STATE_MACHINE_ARN" type="string" required>
+  The ARN of the Step Functions state machine to invoke after splitting the PDF. This is automatically configured by the CDK stack.
+</ParamField>
+
+## Input Event Structure
+
+The function receives a standard S3 event notification:
+
+```json
+{
+  "Records": [
+    {
+      "s3": {
+        "bucket": {
+          "name": "pdf-processing-bucket"
+        },
+        "object": {
+          "key": "pdf/document.pdf"
+        }
+      }
+    }
+  ]
+}
+```
+
+## Processing Logic
+
+### 1. Download PDF from S3
+
+The function extracts the bucket name and object key from the S3 event and downloads the PDF:
+
+```python
+if 'Records' in event and len(event['Records']) > 0:
+    s3_record = event['Records'][0]
+    bucket_name = s3_record['s3']['bucket']['name']
+    pdf_file_key = urllib.parse.unquote_plus(s3_record['s3']['object']['key'])
+
+response = s3.get_object(Bucket=bucket_name, Key=pdf_file_key)
+pdf_file_content = response['Body'].read()
+```
+
+### 2. Split PDF into Chunks
+
+The `split_pdf_into_pages()` function splits the PDF into chunks of 200 pages each:
+
+<ParamField path="source_content" type="bytes" required>
+  The binary content of the PDF file
+</ParamField>
+
+<ParamField path="original_key" type="string" required>
+  The original S3 key of the PDF file
+</ParamField>
+
+<ParamField path="s3_client" type="boto3.client" required>
+  The Boto3 S3 client instance
+</ParamField>
+
+<ParamField path="bucket_name" type="string" required>
+  The name of the S3 bucket
+</ParamField>
+
+<ParamField path="pages_per_chunk" type="int" required>
+  Number of pages per chunk (default: 200)
+</ParamField>
+
+```python
+def split_pdf_into_pages(source_content, original_key, s3_client, bucket_name, pages_per_chunk):
+    from pypdf import PdfReader, PdfWriter
+    
+    reader = PdfReader(io.BytesIO(source_content))
+    num_pages = len(reader.pages)
+    file_basename = original_key.split('/')[-1].rsplit('.', 1)[0]
+    
+    chunks = []
+
+    # Iterate through the PDF pages in chunks
+    for start in range(0, num_pages, pages_per_chunk):
+        output = io.BytesIO()
+        writer = PdfWriter()
+
+        # Add pages to the current chunk
+        for i in range(start, min(start + pages_per_chunk, num_pages)):
+            writer.add_page(reader.pages[i])
+
+        writer.write(output)
+        output.seek(0)
+
+        # Create the filename and S3 key for this chunk
+        chunk_index = start // pages_per_chunk + 1
+        page_filename = f"{file_basename}_chunk_{chunk_index}.pdf"
+        s3_key = f"temp/{file_basename}/{page_filename}"
+
+        # Upload the chunk to S3
+        s3_client.upload_fileobj(
+            Fileobj=output,
+            Bucket=bucket_name,
+            Key=s3_key
+        )
+        
+        # Store metadata for the chunk
+        chunks.append({
+            "s3_bucket": bucket_name,
+            "s3_key": s3_key,
+            "chunk_key": s3_key
+        })
+
+    return chunks
+```
+
+### 3. Upload Chunks to S3
+
+Each chunk is uploaded to the S3 bucket with the following structure:
+
+```
+temp/{original_filename}/{original_filename}_chunk_{index}.pdf
+```
+
+For example, if you upload `document.pdf`, the chunks will be:
+- `temp/document/document_chunk_1.pdf`
+- `temp/document/document_chunk_2.pdf`
+- `temp/document/document_chunk_3.pdf`
+
+### 4. Start Step Functions Execution
+
+After splitting and uploading, the function starts the remediation workflow:
+
+```python
+response = stepfunctions.start_execution(
+    stateMachineArn=state_machine_arn,
+    input=json.dumps({"chunks": chunks, "s3_bucket": bucket_name})
+)
+print(f"Step Function started: {response['executionArn']}")
+```
+
+## Output Structure
+
+<ResponseField name="chunks" type="array" required>
+  Array of chunk metadata objects
+  
+  <ResponseField name="s3_bucket" type="string">
+    The S3 bucket name
+  </ResponseField>
+  
+  <ResponseField name="s3_key" type="string">
+    The S3 key for the chunk
+  </ResponseField>
+  
+  <ResponseField name="chunk_key" type="string">
+    The chunk identifier key
+  </ResponseField>
+</ResponseField>
+
+<ResponseField name="s3_bucket" type="string" required>
+  The source S3 bucket name
+</ResponseField>
+
+## Return Value
+
+On success:
+```json
+{
+  "statusCode": 200,
+  "body": "Event processed successfully!"
+}
+```
+
+On error:
+```json
+{
+  "statusCode": 500,
+  "body": "Error processing event: {error_message}"
+}
+```
+
+## Error Handling
+
+The function handles several error types:
+
+- **KeyError**: Missing required keys in the S3 event structure
+- **ValueError**: Invalid event format (no 'Records' field)
+- **General Exception**: Any unexpected errors during processing
+
+All errors are logged with the filename for tracking:
+
+```python
+except Exception as e:
+    print(f"File: {file_basename}, Status: Failed in split lambda function")
+    print(f"Filename - {pdf_file_key} | Error occurred: {str(e)}", exc_info=True)
+    return {
+        'statusCode': 500,
+        'body': json.dumps(f"Error processing event: {str(e)}")
+    }
+```
+
+## CloudWatch Metrics
+
+The function logs processing status for CloudWatch monitoring:
+
+```python
+def log_chunk_created(filename):
+    print(f"File: {filename}, Status: Processing")
+    print(f'Filename - {filename} | Uploaded {filename} to S3')
+    return {
+        'statusCode': 200,
+        'body': 'Metric status updated to failed.'
+    }
+```
+
+## IAM Permissions Required
+
+- `s3:GetObject` - Download source PDF
+- `s3:PutObject` - Upload PDF chunks
+- `states:StartExecution` - Start Step Functions workflow
+- `cloudwatch:PutMetricData` - Log metrics
+
+## Usage Example
+
+To trigger the function, simply upload a PDF to the designated S3 location:
+
+```bash
+aws s3 cp document.pdf s3://your-bucket/pdf/document.pdf
+```
+
+The function will automatically:
+1. Detect the upload via S3 event notification
+2. Download and split the PDF into 200-page chunks
+3. Upload chunks to `temp/{filename}/` prefix
+4. Start the remediation workflow with chunk metadata
+5. Log processing status to CloudWatch
+
+## Related Functions
+
+- [PDF Merger Lambda](/api/pdf-merger) - Merges processed chunks back together
+- [Title Generator Lambda](/api/title-generator) - Generates accessible titles
+- [Accessibility Checker Lambda](/api/accessibility-checker) - Audits PDF accessibility

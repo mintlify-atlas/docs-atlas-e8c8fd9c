@@ -1,0 +1,297 @@
+---
+title: 'Monitoring'
+description: 'Monitor PDF remediation workflows with CloudWatch dashboards, logs, and metrics'
+---
+
+## Overview
+
+The PDF Accessibility solution provides comprehensive monitoring through CloudWatch dashboards, log groups, and metrics. This enables you to track processing status, identify issues, and optimize performance.
+
+## CloudWatch Dashboard
+
+A CloudWatch dashboard is automatically created during deployment with a timestamped name: `PDF_Processing_Dashboard-{timestamp}`.
+
+### Dashboard Features
+
+The dashboard includes several log query widgets:
+
+1. **File Status Widget** - Tracks the latest processing status for each file
+2. **Split PDF Lambda Logs** - Monitors PDF splitting operations
+3. **Step Function Execution Logs** - Tracks workflow orchestration
+4. **Adobe Autotag Processing Logs** - Monitors PDF tagging operations
+5. **Alt Text Generation Logs** - Tracks AI-powered alt text generation
+6. **PDF Merger Lambda Logs** - Monitors chunk merging operations
+
+### Dashboard Variables
+
+The dashboard includes a `filename` variable that allows filtering logs by specific file names:
+
+- **Variable Type**: Pattern matching
+- **Input Type**: Text input
+- **Default Value**: `.*` (matches all files)
+
+To filter by a specific file, enter the filename or pattern in the dashboard variable input.
+
+## Log Groups
+
+### Lambda Function Logs
+
+All Lambda functions automatically create log groups with standardized naming:
+
+| Function | Log Group Path |
+|----------|----------------|
+| PDF Splitter | `/aws/lambda/{FunctionName}` |
+| PDF Merger | `/aws/lambda/{FunctionName}` |
+| Title Generator | `/aws/lambda/{FunctionName}` |
+| Pre-Remediation Checker | `/aws/lambda/{FunctionName}` |
+| Post-Remediation Checker | `/aws/lambda/{FunctionName}` |
+
+<Note>
+Function names are dynamically generated during deployment. Check the CloudWatch console for exact names.
+</Note>
+
+### ECS Task Logs
+
+ECS Fargate tasks use dedicated log groups:
+
+| Task | Log Group | Stream Prefix | Retention |
+|------|-----------|---------------|------------|
+| Adobe Autotag | `/ecs/pdf-remediation/adobe-autotag` | `AdobeAutotagLogs` | 1 month |
+| Alt Text Generator | `/ecs/pdf-remediation/alt-text-generator` | `AltTextGeneratorLogs` | 1 month |
+
+### Step Functions Logs
+
+Workflow execution logs are stored in:
+
+- **Log Group**: `/aws/states/pdf-accessibility-remediation-workflow`
+- **Log Level**: ALL (includes execution history, state transitions, and errors)
+- **Retention**: 1 month
+
+## Key Metrics to Monitor
+
+### Processing Status Metrics
+
+The application logs file processing status to CloudWatch:
+
+```python
+print(f"File: {filename}, Status: Processing")
+print(f"File: {filename}, Status: Failed")
+```
+
+You can create metric filters to track:
+
+- Files in processing state
+- Failed file count
+- Processing success rate
+
+### Custom CloudWatch Metrics
+
+The Lambda functions publish custom metrics using the `cloudwatch:PutMetricData` permission:
+
+```python
+cloudwatch = boto3.client('cloudwatch')
+# Custom metrics can be published by Lambda functions
+```
+
+### Step Functions Execution Metrics
+
+Monitor Step Functions through the AWS console:
+
+- **Execution Status**: Running, Succeeded, Failed, Timed Out
+- **Duration**: Time taken for complete workflow
+- **State Transitions**: Track progress through workflow stages
+
+### ECS Task Metrics
+
+Key ECS metrics to monitor:
+
+- **Task Launch Duration**: Time to start Fargate containers
+- **CPU Utilization**: Monitor for resource constraints
+- **Memory Utilization**: Track memory usage (1024 MB allocated)
+- **Task Failures**: Failed task launches or runtime errors
+
+## Setting Up Alerts
+
+### CloudWatch Alarms for Lambda Functions
+
+Create alarms for Lambda failures:
+
+```bash
+aws cloudwatch put-metric-alarm \
+  --alarm-name pdf-splitter-errors \
+  --alarm-description "Alert on PDF splitter errors" \
+  --metric-name Errors \
+  --namespace AWS/Lambda \
+  --statistic Sum \
+  --period 300 \
+  --threshold 1 \
+  --comparison-operator GreaterThanThreshold \
+  --evaluation-periods 1
+```
+
+### Step Functions Execution Failures
+
+Monitor workflow failures:
+
+```bash
+aws cloudwatch put-metric-alarm \
+  --alarm-name step-function-failures \
+  --metric-name ExecutionsFailed \
+  --namespace AWS/States \
+  --statistic Sum \
+  --period 300 \
+  --threshold 1 \
+  --comparison-operator GreaterThanThreshold
+```
+
+### ECS Task Failure Alerts
+
+Create alarms for ECS task failures:
+
+```bash
+aws cloudwatch put-metric-alarm \
+  --alarm-name ecs-task-failures \
+  --metric-name TasksFailedToStart \
+  --namespace ECS/ContainerInsights \
+  --statistic Sum \
+  --period 300 \
+  --threshold 1 \
+  --comparison-operator GreaterThanThreshold
+```
+
+## S3 Event Monitoring
+
+Monitor S3 events that trigger processing:
+
+### Event Configuration
+
+The S3 bucket is configured to trigger Lambda on:
+
+- **Event Type**: `OBJECT_CREATED`
+- **Prefix Filter**: `pdf/`
+- **Suffix Filter**: `.pdf`
+
+### Monitoring S3 Events
+
+Check S3 event notifications:
+
+```bash
+aws s3api get-bucket-notification-configuration \
+  --bucket pdfaccessibility-bucket-name
+```
+
+## Log Analysis
+
+### Querying Logs with CloudWatch Insights
+
+Example queries for common analysis tasks:
+
+#### Find Failed Files
+
+```sql
+fields @timestamp, @message
+| parse @message "File: *, Status: *" as file, status
+| filter status = "Failed"
+| sort @timestamp desc
+```
+
+#### Track Processing Duration
+
+```sql
+fields @timestamp, @duration
+| filter @type = "REPORT"
+| stats avg(@duration), max(@duration), min(@duration)
+```
+
+#### Count Errors by Type
+
+```sql
+fields @timestamp, @message
+| filter @message like /Error|Exception/
+| stats count() by @message
+```
+
+## Performance Optimization
+
+### Monitoring Cold Starts
+
+ECS Fargate cold starts are optimized using:
+
+- **zstd compression**: 2-3x faster decompression than gzip
+- **VPC Endpoints**: Reduces ECR image pull time by 10-15 seconds
+- **Compression Level**: Set to 3 for optimal balance
+
+Monitor task startup time in CloudWatch logs:
+
+```sql
+fields @timestamp, @message
+| filter @message like /Started container/
+| stats avg(@duration) as avg_startup_time
+```
+
+### Concurrent Execution Monitoring
+
+The Step Functions Map state processes chunks with:
+
+- **Max Concurrency**: 100 parallel executions
+- **Chunk Size**: 200 pages per chunk (configurable)
+
+Monitor concurrent executions:
+
+```bash
+aws stepfunctions describe-execution \
+  --execution-arn arn:aws:states:region:account:execution:name:id
+```
+
+<Tip>
+Adjust chunk size in `lambda/pdf-splitter-lambda/main.py` line 146 to optimize for your workload. Larger chunks reduce overhead but increase processing time per task.
+</Tip>
+
+## Accessing Monitoring Data
+
+### CloudWatch Console
+
+1. Navigate to the CloudWatch console
+2. Select **Dashboards** to view the PDF Processing Dashboard
+3. Select **Log groups** to browse individual log streams
+4. Use **Logs Insights** for advanced query capabilities
+
+### AWS CLI
+
+Query logs programmatically:
+
+```bash
+# Tail Lambda logs
+aws logs tail /aws/lambda/PdfChunkSplitterLambda --follow
+
+# Query Step Functions logs
+aws logs tail /aws/states/pdf-accessibility-remediation-workflow --follow
+
+# Get ECS task logs
+aws logs tail /ecs/pdf-remediation/adobe-autotag --follow
+```
+
+### SDK Integration
+
+Integrate monitoring into your applications:
+
+```python
+import boto3
+
+logs_client = boto3.client('logs')
+
+# Query log group
+response = logs_client.filter_log_events(
+    logGroupName='/aws/lambda/PdfChunkSplitterLambda',
+    filterPattern='Status: Failed'
+)
+
+for event in response['events']:
+    print(event['message'])
+```
+
+## Next Steps
+
+- [Troubleshooting](/operations/troubleshooting) - Learn how to diagnose and resolve common issues
+- [Cost Optimization](/operations/cost-optimization) - Reduce operational costs
+- [Architecture](/architecture) - Understand the system components

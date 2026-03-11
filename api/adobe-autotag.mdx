@@ -1,0 +1,375 @@
+---
+title: 'Adobe Autotag Container'
+description: 'ECS Fargate task for PDF accessibility tagging using Adobe PDF Services API'
+---
+
+## Overview
+
+The Adobe Autotag Container is an ECS Fargate task that processes PDF documents to make them accessible by:
+- Auto-tagging PDFs for WCAG compliance using Adobe PDF Services
+- Extracting structured content (text, tables, figures)
+- Adding Table of Contents (TOC) based on document headings
+- Detecting document language using AWS Comprehend
+- Extracting and cataloging images for alt-text generation
+
+## Container Configuration
+
+### Task Definition
+
+```python
+adobe_autotag_task_def = ecs.FargateTaskDefinition(
+    memory_limit_mib=1024,
+    cpu=256,
+    execution_role=ecs_task_execution_role,
+    task_role=ecs_task_role
+)
+```
+
+**Resource Allocation:**
+- **Memory:** 1024 MiB
+- **CPU:** 256 units (0.25 vCPU)
+- **Platform:** Linux/AMD64
+- **Compression:** zstd (level 3) for faster cold starts
+
+### Container Image
+
+Built from `adobe-autotag-container/` directory using Docker with zstd compression:
+
+```python
+adobe_autotag_image_asset = ecr_assets.DockerImageAsset(
+    directory="adobe-autotag-container",
+    platform=ecr_assets.Platform.LINUX_AMD64,
+    outputs=["type=image,compression=zstd,compression-level=3,force-compression=true"]
+)
+```
+
+## Environment Variables
+
+The container requires the following environment variables passed from Step Functions:
+
+<ParamField path="S3_BUCKET_NAME" type="string" required>
+  The name of the S3 bucket containing the PDF file to process.
+  
+  **Example:** `pdf-accessibility-bucket`
+</ParamField>
+
+<ParamField path="S3_FILE_KEY" type="string" required>
+  The full S3 key path to the PDF file (format: `temp/{base_name}/{filename}.pdf`).
+  
+  **Example:** `temp/document-123/chunk-001.pdf`
+</ParamField>
+
+<ParamField path="S3_CHUNK_KEY" type="string" required>
+  The chunk-specific key for parallel processing.
+  
+  **Example:** `chunk-001.pdf`
+</ParamField>
+
+<ParamField path="AWS_REGION" type="string" required>
+  The AWS region where resources are located.
+  
+  **Example:** `us-east-1`
+</ParamField>
+
+## Adobe PDF Services Integration
+
+### Authentication
+
+The container retrieves Adobe API credentials from AWS Secrets Manager:
+
+```python
+def get_secret(basefilename):
+    secret_name = "/myapp/client_credentials"
+    client = session.client(
+        service_name='secretsmanager',
+        region_name=region
+    )
+    get_secret_value_response = client.get_secret_value(
+        SecretId=secret_name
+    )
+    secret_dict = json.loads(get_secret_value_response['SecretString'])
+    
+    client_id = secret_dict['client_credentials']['PDF_SERVICES_CLIENT_ID']
+    client_secret = secret_dict['client_credentials']['PDF_SERVICES_CLIENT_SECRET']
+    
+    return client_id, client_secret
+```
+
+### Auto-Tagging Process
+
+The container uses Adobe PDF Services to automatically tag PDFs for accessibility:
+
+```python
+def autotag_pdf_with_options(filename, client_id, client_secret):
+    credentials = ServicePrincipalCredentials(
+        client_id=client_id,
+        client_secret=client_secret
+    )
+    client_config = ClientConfig(
+        connect_timeout=8000,
+        read_timeout=40000
+    )
+    
+    pdf_services = PDFServices(credentials=credentials, client_config=client_config)
+    input_asset = pdf_services.upload(input_stream=input_stream,
+                                    mime_type=PDFServicesMediaType.PDF)
+    
+    # Create parameters for the job
+    autotag_pdf_params = AutotagPDFParams(
+        generate_report=True,
+        shift_headings=True
+    )
+    
+    autotag_pdf_job = AutotagPDFJob(input_asset=input_asset,
+                                    autotag_pdf_params=autotag_pdf_params)
+    
+    location = pdf_services.submit(autotag_pdf_job)
+    pdf_services_response = pdf_services.get_job_result(location, AutotagPDFResult)
+```
+
+**Key Parameters:**
+- `generate_report=True` - Creates an Excel report with figure metadata
+- `shift_headings=True` - Adjusts heading levels for proper hierarchy
+
+### Content Extraction
+
+Extracts structured content including text, tables, and figure renditions:
+
+```python
+def extract_api(filename, client_id, client_secret):
+    extract_pdf_params = ExtractPDFParams(
+        elements_to_extract=[ExtractElementType.TEXT, ExtractElementType.TABLES],
+        elements_to_extract_renditions=[ExtractRenditionsElementType.TABLES, 
+                                       ExtractRenditionsElementType.FIGURES],
+    )
+    
+    extract_pdf_job = ExtractPDFJob(input_asset=input_asset, 
+                                   extract_pdf_params=extract_pdf_params)
+    
+    location = pdf_services.submit(extract_pdf_job)
+    pdf_services_response = pdf_services.get_job_result(location, ExtractPDFResult)
+```
+
+The extracted content is returned as a ZIP file containing:
+- `structuredData.json` - Document structure and content
+- `figures/` - Extracted figure images
+- `tables/` - Rendered table images
+
+## Processing Pipeline
+
+The container executes the following workflow:
+
+### 1. Download from S3
+
+```python
+def download_file_from_s3(bucket_name, file_base_name, file_key, local_path):
+    s3.download_file(bucket_name, f"temp/{file_base_name}/{file_key}", local_path)
+```
+
+### 2. Add Viewer Preferences
+
+Sets PDF viewer preferences for accessibility:
+
+```python
+def add_viewer_preferences(pdf_path, filename):
+    reader = PdfReader(pdf_path)
+    writer = PdfWriter()
+    
+    for page in reader.pages:
+        writer.add_page(page)
+    
+    writer.create_viewer_preferences()
+    writer.viewer_preferences.display_doctitle = True
+    
+    with open(filename, "wb") as f:
+        writer.write(f)
+```
+
+### 3. Run Adobe Autotag API
+
+Auto-tags the PDF for accessibility compliance.
+
+### 4. Run Adobe Extract API
+
+Extracts structured content and images.
+
+### 5. Generate Table of Contents
+
+Creates TOC from document headings:
+
+```python
+def add_toc_to_pdf(filename, pdf_document, data):
+    bookmarks = []
+    for element in data.get("elements", []):
+        path = element.get("Path", "")
+        if re.search(r'H[1-4]', path) and "Text" in element:
+            bookmarks.append((element["Text"], element["Page"] + 1))
+    
+    toc_list = [[1, title, page_number] for title, page_number in bookmarks]
+    pdf_document.set_toc(toc_list)
+```
+
+### 6. Extract and Catalog Images
+
+Creates a SQLite database of images with context for alt-text generation:
+
+```python
+def create_sqlite_db(by_page, filename, images_output_dir, object_ids, 
+                     image_paths, page_num_img, parsed_cordinates, 
+                     bucket_name, s3_folder_autotag, file_key, object_ids_cords):
+    db_path = os.path.join(images_output_dir, "temp_images_data.db")
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    cursor.execute("""
+        CREATE TABLE IF NOT EXISTS image_data (
+            objid TEXT,
+            img_path TEXT,
+            prev TEXT,
+            current TEXT,
+            next TEXT,
+            context TEXT
+        )
+    """)
+    
+    # Match images from Excel report to extracted figures
+    # and build context from surrounding page content
+```
+
+The database includes:
+- **objid** - PDF object identifier for the image
+- **img_path** - Path to extracted image file
+- **context** - Surrounding text content for LLM alt-text generation
+
+### 7. Upload Results to S3
+
+```python
+def save_to_s3(filename, bucket_name, folder_name, file_basename, file_key):
+    with open(filename, "rb") as data:
+        s3.upload_fileobj(data, bucket_name, 
+                         f"temp/{file_basename}/{folder_name}/COMPLIANT_{file_key}")
+```
+
+**Uploaded artifacts:**
+- `temp/{base}/output_autotag/COMPLIANT_{file}.pdf` - Tagged PDF
+- `temp/{base}/output_autotag/images/` - Extracted images
+- `temp/{base}/output_autotag/{file}_temp_images_data.db` - Image metadata database
+
+## IAM Permissions
+
+The ECS task role requires:
+
+### S3 Access
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "s3:GetObject",
+    "s3:PutObject",
+    "s3:DeleteObject"
+  ],
+  "Resource": [
+    "arn:aws:s3:::bucket-name",
+    "arn:aws:s3:::bucket-name/*"
+  ]
+}
+```
+
+### Secrets Manager
+```json
+{
+  "Effect": "Allow",
+  "Action": "secretsmanager:GetSecretValue",
+  "Resource": "arn:aws:secretsmanager:region:account:secret:/myapp/*"
+}
+```
+
+### AWS Comprehend
+```json
+{
+  "Effect": "Allow",
+  "Action": "comprehend:DetectDominantLanguage",
+  "Resource": "*"
+}
+```
+
+## Error Handling
+
+The container exits with status code 1 on failures:
+
+```python
+try:
+    # Processing logic
+    logger.info(f"File: {file_base_name}, Status: Succeeded in First ECS task")
+except (ServiceApiException, ServiceUsageException, SdkException) as e:
+    logger.error(f"File: {file_base_name}, Status: Failed in First ECS task - Adobe API Error")
+    sys.exit(1)
+except ClientError as e:
+    logger.error(f"File: {file_base_name}, Status: Failed in First ECS task - AWS Error")
+    sys.exit(1)
+except Exception as e:
+    logger.error(f"File: {file_base_name}, Status: Failed in First ECS task")
+    sys.exit(1)
+```
+
+## Logging
+
+Container logs are sent to CloudWatch Logs:
+
+```python
+adobe_autotag_log_group = logs.LogGroup(
+    log_group_name="/ecs/pdf-remediation/adobe-autotag",
+    retention=logs.RetentionDays.ONE_MONTH
+)
+```
+
+**Log format:**
+```
+2024-01-15 10:30:45 - INFO - Filename : chunk-001.pdf | Downloaded from S3
+2024-01-15 10:30:46 - INFO - Filename : chunk-001.pdf | Adobe Autotag completed successfully
+2024-01-15 10:30:50 - INFO - Filename : chunk-001.pdf | Adobe Extract API completed successfully
+2024-01-15 10:30:52 - INFO - Filename : chunk-001.pdf | TOC entries added to the PDF
+2024-01-15 10:30:55 - INFO - File: document-123, Status: Succeeded in First ECS task
+```
+
+## Step Functions Integration
+
+The container is invoked as part of a Step Functions Map state:
+
+```python
+adobe_autotag_task = tasks.EcsRunTask(
+    integration_pattern=sfn.IntegrationPattern.RUN_JOB,
+    cluster=pdf_remediation_cluster,
+    task_definition=adobe_autotag_task_def,
+    assign_public_ip=False,
+    container_overrides=[tasks.ContainerOverride(
+        container_definition=adobe_autotag_container_def,
+        environment=[
+            tasks.TaskEnvironmentVariable(
+                name="S3_BUCKET_NAME",
+                value=sfn.JsonPath.string_at("$.s3_bucket")
+            ),
+            tasks.TaskEnvironmentVariable(
+                name="S3_FILE_KEY",
+                value=sfn.JsonPath.string_at("$.s3_key")
+            )
+        ]
+    )]
+)
+```
+
+## Performance Optimization
+
+**Cold Start Optimization:**
+- zstd compression (level 3) reduces image decompression time by 2-3x vs gzip
+- VPC endpoints for ECR reduce cold start by 10-15 seconds
+
+**Timeouts:**
+- Connect timeout: 8000ms
+- Read timeout: 40000ms
+
+## Related Resources
+
+- [Alt-Text Generator Container](/api/alt-text-generator)
+- [Remediation Workflow](/api/remediation-workflow)
+- [Architecture Overview](/architecture)

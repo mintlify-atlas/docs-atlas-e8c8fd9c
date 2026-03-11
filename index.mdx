@@ -1,97 +1,111 @@
 ---
-title: "Introduction"
-description: "Welcome to the new home for your documentation"
+title: "PDF Accessibility"
+description: "AWS-powered PDF remediation solution that makes documents WCAG 2.1 Level AA compliant with AI-generated alt-text and automated accessibility improvements"
 ---
 
-## Setting up
+<div style={{
+  background: 'linear-gradient(135deg, #8d1e45 0%, #c4899c 100%)',
+  padding: '4rem 2rem',
+  borderRadius: '24px',
+  marginBottom: '3rem',
+  textAlign: 'center'
+}}>
+  <h1 style={{
+    fontSize: '3rem',
+    fontWeight: 700,
+    color: '#ffffff',
+    marginBottom: '1rem'
+  }}>
+    PDF Accessibility Solutions
+  </h1>
+  <p style={{
+    fontSize: '1.25rem',
+    color: '#ffffff',
+    maxWidth: '800px',
+    margin: '0 auto',
+    opacity: 0.95
+  }}>
+    Transform any PDF into a WCAG 2.1 Level AA compliant document with automated AI-powered remediation
+  </p>
+</div>
 
-Get your documentation site up and running in minutes.
+## Choose Your Remediation Path
 
-<Card
-  title="Start here"
-  icon="rocket"
-  href="/quickstart"
-  horizontal
->
-  Follow our three step quickstart guide.
-</Card>
+PDF Accessibility provides two complementary solutions for making PDFs accessible:
 
-## Make it yours
-
-Design a docs site that looks great and empowers your users.
-
-<Columns cols={2}>
-  <Card
-    title="Edit locally"
-    icon="pen-to-square"
-    href="/development"
-  >
-    Edit your docs locally and preview them in real time.
+<CardGroup cols={2}>
+  <Card title="PDF-to-PDF Remediation" icon="file-pdf" href="/architecture/pdf-to-pdf">
+    Maintain original PDF format while adding accessibility features with Adobe PDF Services and AWS Bedrock
   </Card>
-  <Card
-    title="Customize your site"
-    icon="palette"
-    href="/essentials/settings"
-  >
-    Customize the design and colors of your site to match your brand.
+  <Card title="PDF-to-HTML Remediation" icon="code" href="/architecture/pdf-to-html">
+    Convert PDFs to accessible HTML with AWS Bedrock Data Automation for web-native accessibility
   </Card>
-    <Card
-    title="Set up navigation"
-    icon="map"
-    href="/essentials/navigation"
-  >
-    Organize your docs to help users find what they need and succeed with your product.
-  </Card>
-  <Card
-    title="API documentation"
-    icon="terminal"
-    href="/api-reference/introduction"
-  >
-    Auto-generate API documentation from OpenAPI specifications.
-  </Card>
-</Columns>
+</CardGroup>
 
-## Create beautiful pages
+## Key Features
 
-Everything you need to create world-class documentation.
+<CardGroup cols={2}>
+  <Card title="WCAG 2.1 Level AA Compliance" icon="circle-check">
+    Automated remediation to meet international accessibility standards
+  </Card>
+  <Card title="AI-Powered Alt-Text" icon="robot">
+    AWS Bedrock generates descriptive alt-text for images automatically
+  </Card>
+  <Card title="Adobe PDF Services Integration" icon="tags">
+    Professional-grade PDF tagging and structure analysis
+  </Card>
+  <Card title="Serverless Architecture" icon="cloud">
+    Scalable processing with AWS Lambda and ECS Fargate
+  </Card>
+  <Card title="Step Functions Orchestration" icon="diagram-project">
+    Reliable workflow management for complex document processing
+  </Card>
+  <Card title="Pre/Post Accessibility Auditing" icon="clipboard-check">
+    Automated validation ensures compliance before and after remediation
+  </Card>
+</CardGroup>
 
-<Columns cols={2}>
-  <Card
-    title="Write with MDX"
-    icon="pen-fancy"
-    href="/essentials/markdown"
-  >
-    Use MDX to style your docs pages.
-  </Card>
-  <Card
-    title="Code samples"
-    icon="code"
-    href="/essentials/code"
-  >
-    Add sample code to demonstrate how to use your product.
-  </Card>
-  <Card
-    title="Images"
-    icon="image"
-    href="/essentials/images"
-  >
-    Display images and other media.
-  </Card>
-  <Card
-    title="Reusable snippets"
-    icon="recycle"
-    href="/essentials/reusable-snippets"
-  >
-    Write once and reuse across your docs.
-  </Card>
-</Columns>
+## Get Started
 
-## Need inspiration?
+<CardGroup cols={2}>
+  <Card title="Quickstart" icon="rocket" href="/quickstart">
+    Deploy PDF Accessibility to your AWS account in minutes with our one-click deployment
+  </Card>
+  <Card title="Architecture Overview" icon="sitemap" href="/architecture/overview">
+    Understand the AWS components and processing workflow
+  </Card>
+  <Card title="Configuration" icon="gear" href="/configuration/iam-permissions">
+    Configure IAM permissions, Adobe credentials, and service limits
+  </Card>
+  <Card title="API Reference" icon="code" href="/api/pdf-splitter">
+    Explore Lambda functions, ECS containers, and Step Functions workflows
+  </Card>
+</CardGroup>
 
-<Card
-  title="See complete examples"
-  icon="stars"
-  href="https://mintlify.com/customers"
->
-  Browse our showcase of exceptional documentation sites.
-</Card>
+## How It Works
+
+<Steps>
+  <Step title="Upload PDF to S3">
+    Drop your PDF into the designated S3 bucket to trigger automated processing
+  </Step>
+  <Step title="Automated Processing">
+    PDFs are split, tagged with Adobe services, and enhanced with AI-generated alt-text
+  </Step>
+  <Step title="Accessibility Validation">
+    Pre and post-remediation checks ensure WCAG 2.1 Level AA compliance
+  </Step>
+  <Step title="Download Results">
+    Retrieve your remediated PDF or HTML package from the results folder
+  </Step>
+</Steps>
+
+## Built For
+
+- **Government agencies** requiring Section 508 compliance
+- **Educational institutions** making course materials accessible
+- **Enterprise organizations** meeting accessibility requirements
+- **Content publishers** ensuring inclusive document distribution
+
+<Note>
+  Built by Arizona State University's AI Cloud Innovation Center (AI CIC) and powered by AWS
+</Note>

@@ -1,0 +1,509 @@
+---
+title: 'Alt-Text Generator Container'
+description: 'ECS Fargate task for generating WCAG 2.1-compliant alt text using AWS Bedrock'
+---
+
+## Overview
+
+The Alt-Text Generator Container is an ECS Fargate task that generates accessible alt text for images in PDF documents using:
+- AWS Bedrock generative AI models (Amazon Nova)
+- Context-aware image analysis with surrounding text
+- WCAG 2.1 compliance guidelines
+- Automated hyperlink alt-text generation
+
+## Container Configuration
+
+### Task Definition
+
+```python
+alt_text_task_def = ecs.FargateTaskDefinition(
+    memory_limit_mib=1024,
+    cpu=256,
+    execution_role=ecs_task_execution_role,
+    task_role=ecs_task_role
+)
+```
+
+**Resource Allocation:**
+- **Memory:** 1024 MiB
+- **CPU:** 256 units (0.25 vCPU)
+- **Platform:** Linux/AMD64
+- **Compression:** zstd (level 3) for faster cold starts
+
+### Container Image
+
+Built from `alt-text-generator-container/` directory:
+
+```python
+alt_text_generator_image_asset = ecr_assets.DockerImageAsset(
+    directory="alt-text-generator-container",
+    platform=ecr_assets.Platform.LINUX_AMD64,
+    outputs=["type=image,compression=zstd,compression-level=3,force-compression=true"]
+)
+```
+
+## Environment Variables
+
+The container requires the following environment variables:
+
+<ParamField path="S3_BUCKET_NAME" type="string" required>
+  The name of the S3 bucket containing the processed PDF and image data.
+  
+  **Example:** `pdf-accessibility-bucket`
+</ParamField>
+
+<ParamField path="S3_FILE_KEY" type="string" required>
+  The S3 key path to the PDF file being processed.
+  
+  **Example:** `temp/document-123/chunk-001.pdf`
+</ParamField>
+
+<ParamField path="AWS_REGION" type="string" required>
+  The AWS region for Bedrock and S3 access.
+  
+  **Example:** `us-east-1`
+</ParamField>
+
+## AWS Bedrock Integration
+
+### Model Configuration
+
+The container uses two Bedrock models:
+
+```javascript
+// Model ID for generating alt text for images (requires vision capability)
+const MODEL_ID_ALT_TEXT = "us.amazon.nova-pro-v1:0";
+
+// Model ID for generating alt text for hyperlinks (text-only, can use lighter model)
+const MODEL_ID_LINK_ALT_TEXT = "us.amazon.nova-lite-v1:0";
+```
+
+**Models:**
+- **Nova Pro v1** - Vision model for image analysis with context
+- **Nova Lite v1** - Text-only model for hyperlink descriptions
+
+### Image Alt-Text Generation
+
+Generates alt text using multimodal AI with context awareness:
+
+```javascript
+const invokeModel = async (prompt, imageBuffer) => {
+    const client = new BedrockRuntimeClient({ region: AWS_REGION });
+    
+    const inputImageBase64 = imageBuffer ? imageBuffer.toString('base64') : null;
+    
+    const payload = {
+        system: [{
+            text: "You are an intelligent assistant capable of analyzing images and answering questions about them."
+        }],
+        messages: [{
+            role: "user",
+            content: [
+                { text: prompt },
+                {
+                    image: {
+                        format: "png",
+                        source: { bytes: inputImageBase64 }
+                    }
+                }
+            ]
+        }],
+        inferenceConfig: {
+            max_new_tokens: 1000,
+            temperature: 0.7,
+            top_p: 0.9,
+            top_k: 50,
+            stopSequences: []
+        }
+    };
+    
+    const command = new InvokeModelCommand({
+        modelId: MODEL_ID_ALT_TEXT,
+        contentType: "application/json",
+        accept: "application/json",
+        body: JSON.stringify(payload)
+    });
+    
+    const apiResponse = await client.send(command);
+    const decodedResponseBody = new TextDecoder("utf-8").decode(apiResponse.body);
+    const responseBody = JSON.parse(decodedResponseBody);
+    
+    return responseBody.output.message;
+};
+```
+
+### WCAG 2.1 Compliance Prompt
+
+The container uses a comprehensive prompt template that enforces WCAG 2.1 guidelines:
+
+```javascript
+async function generateAltText(imageObject, imageBuffer) {
+    const prompt = `Generate WCAG 2.1-compliant alt text for an image embedded in a PDF document. 
+    The output must be in strict JSON format as follows:
+    {"${imageObject.id}": "Alternative text"}
+    
+    Follow these guidelines:
+    1. Image Description:
+       - Describe key elements: objects, people, scenes, visible text
+       - Consider the image's role within the PDF
+    
+    2. WCAG 2.1 Compliance:
+       a) Text in Image:
+          - If duplicated nearby, use empty alt text: alt=""
+          - For functional text (e.g., icons), describe the function
+          - Otherwise, include the exact text
+       b) Functional Images:
+          - For links/buttons, describe the action/destination
+       c) Informative Images:
+          - Provide concise description of essential information
+       d) Decorative Images:
+          - Use empty alt text: alt=""
+    
+    3. Equation-Specific Alt Text Guidance:
+        - Spell out every symbol, number, and operator
+        - Use explicit phrases: "open parenthesis", "plus", "equals", "to the power of"
+        - Example: "f open parenthesis t close parenthesis equals k1 e to the power of 2 t"
+    
+    <PAGE CONTENT AND CONTEXT INFORMATION>
+    ${imageObject.context_json.context}
+    </PAGE CONTENT AND CONTEXT INFORMATION>
+    `;
+    
+    const response = await invokeModel(prompt, imageBuffer);
+    return response.content[0].text;
+}
+```
+
+**Special Handling:**
+- **Equations:** Detailed verbalization ("2 open parenthesis 4 y plus 1 close parenthesis equals 3 y")
+- **Subscripts/Superscripts:** Explicit notation ("F with subscript i end subscript")
+- **Context-aware:** Uses surrounding text to improve accuracy
+- **Multiple images:** Distinguishes between images on the same page
+
+### Hyperlink Alt-Text Generation
+
+Generates descriptive alt text for hyperlinks:
+
+```javascript
+const invokeModel_alt_text_links = async (prompt) => {
+    const client = new BedrockRuntimeClient({ region: AWS_REGION });
+    
+    const payload = {
+        system: [{
+            text: "You are an intelligent assistant capable of analyzing links and answering questions about them."
+        }],
+        messages: [{
+            role: "user",
+            content: [{ text: prompt }]
+        }],
+        inferenceConfig: {
+            max_new_tokens: 1000,
+            temperature: 0.7,
+            top_p: 0.9,
+            top_k: 50
+        }
+    };
+    
+    const command = new InvokeModelCommand({
+        modelId: MODEL_ID_LINK_ALT_TEXT,
+        contentType: "application/json",
+        accept: "application/json",
+        body: JSON.stringify(payload)
+    });
+    
+    const apiResponse = await client.send(command);
+    return JSON.parse(new TextDecoder().decode(apiResponse.body)).output.message.content[0].text;
+};
+
+async function generateAltTextForLink(url) {
+    const prompt = `Generate WCAG 2.1-compliant alt text for a hyperlink. 
+    The alt text should describe the link's destination or purpose in a clear and concise manner.
+    Example: "Link to YouTube video about PDF accessibility".
+    The link URL is: ${url}.
+    Just give only alt text. Do not give any other word or phrases like "Here is the alt text".
+    `;
+    
+    return await invokeModel_alt_text_links(prompt);
+}
+```
+
+## Processing Pipeline
+
+### 1. Retrieve Image Metadata
+
+Downloads SQLite database created by Adobe Autotag container:
+
+```javascript
+async function startProcess() {
+    const bucketName = process.env.S3_BUCKET_NAME;
+    const textFileKey = `${process.env.S3_FILE_KEY.split("/")[1]}/output_autotag/${process.env.S3_FILE_KEY.split("/").pop()}_temp_images_data.db`;
+    const filebasename = process.env.S3_FILE_KEY.split("/")[1];
+    
+    const getObjectParams = {
+        Bucket: bucketName,
+        Key: `temp/${textFileKey}`
+    };
+    
+    const command = new GetObjectCommand(getObjectParams);
+    const { Body } = await s3Client.send(command);
+    
+    // Stream to buffer and save locally
+    const fileBuffer = Buffer.concat(chunks);
+    const localFilePath = path.join(__dirname, `temp_images_data.db`);
+    fs_1.writeFileSync(localFilePath, fileBuffer);
+```
+
+### 2. Query Image Data
+
+Extracts image metadata from SQLite database:
+
+```javascript
+    const db = new Database(localFilePath, { readonly: true });
+    let imageObjects = [];
+    
+    const rows = db.prepare('SELECT * FROM image_data').all();
+    imageObjects = rows.map((row) => {
+        const splitKey = process.env.S3_FILE_KEY.split('/');
+        return {
+            id: row.objid,
+            path: `temp/${splitKey[1]}/output_autotag/images/${splitKey.pop()}_${row.img_path}`,
+            context_json: {
+                context: row.context
+            }
+        };
+    });
+    
+    db.close();
+}
+```
+
+**Database schema:**
+- `objid` - PDF object ID
+- `img_path` - Image filename
+- `context` - Surrounding page content with markers (`<IMAGE INTERESTED>`, `<OTHER IMAGE>`)
+
+### 3. Process Each Image
+
+Downloads images from S3 and generates alt text:
+
+```javascript
+    let combinedResults = {};
+    let successCount = 0;
+    let failureCount = 0;
+    
+    for (const imageObject of imageObjects) {
+        try {
+            // Download image from S3
+            const getObjectParams = {
+                Bucket: bucketName,
+                Key: imageObject.path
+            };
+            
+            const command = new GetObjectCommand(getObjectParams);
+            const { Body } = await s3Client.send(command);
+            
+            // Save locally
+            const fileBuffer = Buffer.concat(chunks);
+            const localFilePath = path.join(__dirname, `${imageObject.path.split('/').pop()}`);
+            fs_1.writeFileSync(localFilePath, fileBuffer);
+            
+            // Generate alt text
+            const image_Buffer = await fs.readFile(localFilePath);
+            const response = await generateAltText(imageObject, image_Buffer);
+            
+            Object.assign(combinedResults, JSON.parse(response));
+            successCount++;
+        } catch (error) {
+            failureCount++;
+            logger.error(`Alt text generation failed for image ${imageObject.id}: ${error.message}`);
+        }
+        
+        await sleep(2000); // Rate limiting
+    }
+```
+
+**Error Handling:**
+- Individual image failures are logged but don't stop processing
+- If all images fail (likely throttling), container exits with error
+- Default text "No text available" assigned to failed images
+
+### 4. Modify PDF
+
+Updates PDF with generated alt text:
+
+```javascript
+async function modifyPDF(zipped, bucketName, inputKey, outputKey, filebasename) {
+    // Download PDF from S3
+    const downloadParams = {
+        Bucket: process.env.S3_BUCKET_NAME,
+        Key: `temp/${filebasename}/output_autotag/COMPLIANT_${process.env.S3_FILE_KEY.split("/").pop()}`
+    };
+    
+    const pdfData = await s3Client.send(new GetObjectCommand(downloadParams));
+    const pdfBytes = fs_1.readFileSync(downloadPath);
+    const pdfDoc = await PDFDocument.load(pdfBytes);
+    
+    // Process PDF structure
+    pdfDoc.context.enumerateIndirectObjects().forEach(([pdfRef, pdfObject]) => {
+        if (pdfObject instanceof PDFDict) {
+            const structType = pdfObject.lookup(PDFName.of('S'))?.encodedName;
+            
+            // Add alt text to figures
+            if (structType === '/Figure') {
+                Object.entries(zipped).forEach(([key, value]) => {
+                    if (key == pdfRef.objectNumber) {
+                        if (value === 'artifact') {
+                            pdfObject.set(PDFName.of('S'), PDFName.of('Artifact'));
+                        } else {
+                            const newAltText = value;
+                            pdfObject.set(PDFName.of('Alt'), PDFString.of(newAltText));
+                            pdfObject.set(PDFName.of('Contents'), PDFString.of(newAltText));
+                        }
+                    }
+                });
+            }
+            
+            // Add alt text to hyperlinks
+            if (pdfObject.has(PDFName.of('Type')) && 
+                pdfObject.lookup(PDFName.of('Type')).encodedName === '/Annot') {
+                const subType = pdfObject.lookup(PDFName.of('Subtype'))?.encodedName;
+                if (subType === '/Link') {
+                    const action = pdfObject.lookup(PDFName.of('A'));
+                    const url = action?.lookup(PDFName.of('URI'))?.value;
+                    
+                    if (url) {
+                        const altTextPromise = generateAltTextForLink(url).then((altText) => {
+                            pdfObject.set(PDFName.of('Alt'), PDFString.of(altText));
+                            pdfObject.set(PDFName.of('Contents'), PDFString.of(altText));
+                        });
+                        linkProcessingPromises.push(altTextPromise);
+                    }
+                }
+            }
+        }
+    });
+    
+    await Promise.all(linkProcessingPromises);
+```
+
+### 5. Upload Modified PDF
+
+```javascript
+    // Save modified PDF
+    const modifiedPdfBytes = await pdfDoc.save();
+    const modifiedPdfPath = path.join('/tmp', 'modified_' + path.basename(inputKey));
+    fs_1.writeFileSync(modifiedPdfPath, modifiedPdfBytes);
+    
+    // Upload to S3
+    const uploadParams = {
+        Bucket: bucketName,
+        Key: `temp/${filebasename}/FINAL_${outputKey}`,
+        Body: fs_1.createReadStream(modifiedPdfPath),
+        ContentType: 'application/pdf'
+    };
+    await s3Client.send(new PutObjectCommand(uploadParams));
+}
+```
+
+**Output Location:** `temp/{base}/FINAL_{filename}.pdf`
+
+## IAM Permissions
+
+The ECS task role requires:
+
+### Bedrock Access
+```json
+{
+  "Effect": "Allow",
+  "Action": "bedrock:InvokeModel",
+  "Resource": "*"
+}
+```
+
+### S3 Access
+```json
+{
+  "Effect": "Allow",
+  "Action": [
+    "s3:GetObject",
+    "s3:PutObject"
+  ],
+  "Resource": [
+    "arn:aws:s3:::bucket-name/*"
+  ]
+}
+```
+
+## Error Handling
+
+```javascript
+// Check if all images failed (likely throttling)
+if (imageObjects.length > 0 && successCount === 0) {
+    logger.error(`All ${failureCount} alt text generation requests failed - likely due to throttling`);
+    logger.error(`File: ${filebasename}, Status: Failed in second ECS task - All Bedrock requests failed`);
+    process.exit(1);
+}
+
+logger.info(`Alt text generation complete: ${successCount} succeeded, ${failureCount} failed out of ${imageObjects.length} images`);
+```
+
+## Logging
+
+Container logs are sent to CloudWatch Logs:
+
+```python
+alt_text_generator_log_group = logs.LogGroup(
+    log_group_name="/ecs/pdf-remediation/alt-text-generator",
+    retention=logs.RetentionDays.ONE_MONTH
+)
+```
+
+**Log format:**
+```
+2024-01-15 10:35:00 - INFO - Filename: document-123 | Total images to process: 5
+2024-01-15 10:35:02 - INFO - response of alt text: {"125": "Graph showing..."}
+2024-01-15 10:35:03 - INFO - Filename: document-123 | Alt text generation succeeded for image 125 (1 succeeded, 0 failed)
+2024-01-15 10:35:10 - INFO - Filename: document-123 | Alt text generation complete: 5 succeeded, 0 failed
+2024-01-15 10:35:12 - INFO - Filename: document-123 | PDF modification complete
+```
+
+## Step Functions Integration
+
+The container runs after the Adobe Autotag task in the workflow:
+
+```python
+adobe_autotag_task.next(alt_text_generation_task)
+```
+
+Environment variables are passed from the previous task:
+
+```python
+alt_text_generation_task = tasks.EcsRunTask(
+    integration_pattern=sfn.IntegrationPattern.RUN_JOB,
+    container_overrides=[tasks.ContainerOverride(
+        environment=[
+            tasks.TaskEnvironmentVariable(
+                name="S3_BUCKET_NAME",
+                value=sfn.JsonPath.string_at("$.Overrides.ContainerOverrides[0].Environment[0].Value")
+            ),
+            tasks.TaskEnvironmentVariable(
+                name="S3_FILE_KEY",
+                value=sfn.JsonPath.string_at("$.Overrides.ContainerOverrides[0].Environment[1].Value")
+            )
+        ]
+    )]
+)
+```
+
+## Rate Limiting
+
+To avoid Bedrock throttling:
+- 2-second delay between image processing requests
+- Individual failures don't stop processing
+- Container fails only if all requests fail
+
+## Related Resources
+
+- [Adobe Autotag Container](/api/adobe-autotag)
+- [Remediation Workflow](/api/remediation-workflow)
+- [Architecture Overview](/architecture)
