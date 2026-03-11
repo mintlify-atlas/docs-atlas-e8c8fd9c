@@ -1,0 +1,115 @@
+{
+  "projectType": "infrastructure",
+  "projectName": "PDF Accessibility",
+  "projectDescription": "AWS-powered PDF remediation solution that makes documents WCAG 2.1 Level AA compliant with AI-generated alt-text and automated accessibility improvements.",
+  "theme": "aspen",
+  "primaryColor": "#8d1e45",
+  "lightColor": "#c4899c",
+  "darkColor": "#e5cdd5",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/pdf-to-pdf",
+              "architecture/pdf-to-html"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/prerequisites",
+              "deployment/one-click-deployment",
+              "deployment/manual-deployment",
+              "deployment/ui-deployment"
+            ]
+          },
+          {
+            "group": "Usage",
+            "pages": [
+              "usage/pdf-to-pdf-workflow",
+              "usage/pdf-to-html-workflow",
+              "usage/understanding-results"
+            ]
+          },
+          {
+            "group": "Configuration",
+            "pages": [
+              "configuration/limits-and-quotas",
+              "configuration/iam-permissions",
+              "configuration/adobe-credentials",
+              "configuration/bedrock-setup"
+            ]
+          },
+          {
+            "group": "Operations",
+            "pages": [
+              "operations/monitoring",
+              "operations/troubleshooting",
+              "operations/cost-optimization"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Lambda Functions",
+            "pages": [
+              "api/pdf-splitter",
+              "api/pdf-merger",
+              "api/title-generator",
+              "api/accessibility-checker"
+            ]
+          },
+          {
+            "group": "ECS Containers",
+            "pages": [
+              "api/adobe-autotag",
+              "api/alt-text-generator"
+            ]
+          },
+          {
+            "group": "Step Functions",
+            "pages": [
+              "api/remediation-workflow"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Automated PDF remediation to WCAG 2.1 Level AA standards",
+    "AI-powered alt-text generation using AWS Bedrock",
+    "Adobe PDF Services integration for professional tagging",
+    "Dual processing modes: PDF-to-PDF and PDF-to-HTML",
+    "Scalable serverless architecture with Lambda and ECS Fargate",
+    "Step Functions workflow orchestration for complex document processing",
+    "Pre and post-remediation accessibility auditing",
+    "CloudWatch monitoring dashboards for processing transparency"
+  ],
+  "publicApiSurface": [
+    "PdfSplitterLambda - S3-triggered PDF chunking",
+    "PdfMergerLambda - Reassembles processed chunks",
+    "TitleGeneratorLambda - AI-generated accessible titles",
+    "PreRemediationAccessibilityChecker - Audits original PDFs",
+    "PostRemediationAccessibilityChecker - Validates remediated output",
+    "AdobeAutotagContainer - Adobe PDF Services tagging",
+    "AltTextGeneratorContainer - Bedrock-powered image descriptions",
+    "PdfAccessibilityRemediationWorkflow - Step Functions orchestration",
+    "Pdf2HtmlPipeline - Lambda-based HTML conversion"
+  ]
+}
